@@ -1,0 +1,93 @@
+# ─── AlertManager Configuration ──────────────────────────────────────────────
+# AlertManager receives alerts FROM Prometheus and routes them to receivers.
+# Prometheus detects the problem.
+# AlertManager decides: who gets notified, how, and how often.
+#
+# SETUP REQUIRED: Replace https://hooks.slack.com/services/fake/webhook/url with your actual webhook.
+# How to get one:
+# 1. Go to https://api.slack.com/messaging/webhooks
+# 2. Create a Slack app, enable "Incoming Webhooks"
+# 3. Add webhook to a channel
+# 4. Copy the webhook URL
+
+global:
+  # How long to wait before re-sending a resolved alert
+  resolve_timeout: 5m
+  
+  # Default Slack webhook (override per receiver)
+  slack_api_url: 'slack_api_url: 'YOUR_SLACK_WEBHOOK_URL''
+
+# ─── Routing Tree ─────────────────────────────────────────────────────────────
+# Every alert enters at the root route and gets matched against routes.
+# First match wins. Unmatched alerts go to the default receiver.
+route:
+  # Default receiver if no route matches
+  receiver: 'slack-warnings'
+  
+  # Group alerts together to avoid notification spam.
+  # All alerts with same alertname+job get grouped into one notification.
+  group_by: ['alertname', 'job']
+  
+  # Wait 30s before sending first notification (collect related alerts)
+  group_wait: 30s
+  
+  # Wait 5m before sending notifications for a new group
+  group_interval: 5m
+  
+  # Wait 4h before re-sending the same alert
+  repeat_interval: 4h
+
+  # ─── Sub-routes ─────────────────────────────────────────────────────────────
+  routes:
+    # Critical alerts go to a separate channel with shorter repeat
+    - match:
+        severity: critical
+      receiver: 'slack-critical'
+      repeat_interval: 1h    # Re-alert every hour if still firing
+      
+    # Warning alerts go to general channel
+    - match:
+        severity: warning
+      receiver: 'slack-warnings'
+
+# ─── Receivers ────────────────────────────────────────────────────────────────
+# Receivers define WHERE and HOW to send notifications
+
+receivers:
+  - name: 'slack-critical'
+    slack_configs:
+      - channel: '#alerts-critical'
+        # send_resolved: true means we get notified when the alert resolves too
+        send_resolved: true
+        title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          {{ if .Annotations.runbook_url }}*Runbook:* {{ .Annotations.runbook_url }}{{ end }}
+          {{ end }}
+
+  - name: 'slack-warnings'
+    slack_configs:
+      - channel: '#alerts-warnings'
+        send_resolved: true
+        title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'
+        text: |
+          *Alert:* {{ .GroupLabels.alertname }}
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          {{ end }}
+
+# ─── Inhibition Rules ─────────────────────────────────────────────────────────
+# Inhibition suppresses certain alerts when other alerts are firing.
+# Example: If ServiceDown is firing, don't also send HighErrorRate
+# (the service being down IS the cause of the errors - don't double-alert)
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    # Inhibit warning if critical alert for same job is already firing
+    equal: ['alertname', 'job']
