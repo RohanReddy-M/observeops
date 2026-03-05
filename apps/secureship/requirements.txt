@@ -1,0 +1,15 @@
+# Web framework - handles HTTP requests, routing, validation
+fastapi==0.104.1
+
+# ASGI server - this actually runs FastAPI (like gunicorn but async)
+# We bind to 0.0.0.0 so it accepts connections from outside the container
+uvicorn==0.24.0
+
+# Prometheus metrics library - exposes /metrics endpoint
+prometheus-client==0.19.0
+
+# HTTP client - useful for making requests to other services
+httpx==0.25.2
+
+# For parsing request bodies
+python-multipart==0.0.6

@@ -1,0 +1,91 @@
+# ─── Prometheus Configuration ─────────────────────────────────────────────────
+# Prometheus works by PULLING metrics from targets (scraping).
+# This file tells Prometheus:
+# 1. How often to scrape (global interval)
+# 2. WHERE to scrape (scrape_configs)
+# 3. Which alert rules to evaluate (rule_files)
+# 4. Where to send alerts (alerting)
+
+global:
+  # How often Prometheus collects metrics from each target
+  scrape_interval: 15s
+  
+  # How often Prometheus evaluates alert rules
+  evaluation_interval: 15s
+  
+  # Labels added to ALL metrics collected by this Prometheus instance
+  # Useful when you have multiple Prometheus servers
+  external_labels:
+    environment: 'production'
+    project: 'observeops'
+
+# ─── Alert Rules ──────────────────────────────────────────────────────────────
+# Prometheus loads these files and evaluates rules every evaluation_interval
+rule_files:
+  - "/etc/prometheus/alerts.yml"
+
+# ─── AlertManager Integration ─────────────────────────────────────────────────
+# When an alert rule fires, Prometheus sends it to AlertManager
+# AlertManager then decides how/where to route the notification (Slack, email, etc.)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093    # Container name resolves via Docker DNS
+
+# ─── Scrape Configurations ────────────────────────────────────────────────────
+# Each job defines a set of targets to scrape.
+# Prometheus will hit <target>/metrics every scrape_interval seconds.
+
+scrape_configs:
+
+  # ─── Prometheus scrapes ITSELF ──────────────────────────────────────────────
+  # Meta! This lets you monitor Prometheus's own health and performance.
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # ─── SecureShip ─────────────────────────────────────────────────────────────
+  # Prometheus hits http://secureship:8001/metrics every 15 seconds
+  # and stores all the metrics from our FastAPI app
+  - job_name: 'secureship'
+    static_configs:
+      - targets: ['secureship:8001']
+        labels:
+          service: 'secureship'
+          team: 'backend'
+    # Path to scrape (default is /metrics, but we specify explicitly)
+    metrics_path: '/metrics'
+
+  # ─── StatusService ──────────────────────────────────────────────────────────
+  - job_name: 'statusservice'
+    static_configs:
+      - targets: ['statusservice:8002']
+        labels:
+          service: 'statusservice'
+          team: 'backend'
+
+  # ─── Node Exporter ──────────────────────────────────────────────────────────
+  # Node exporter exposes Linux system metrics:
+  # CPU usage, memory, disk space, network traffic, etc.
+  # This is your infrastructure-level monitoring (as opposed to app-level)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
+          instance_type: 'app-server'
+
+  # ─── Nginx ──────────────────────────────────────────────────────────────────
+  # Nginx doesn't expose Prometheus metrics by default.
+  # We use nginx-prometheus-exporter as a sidecar for this.
+  # For now, we monitor nginx via its access logs in Loki instead.
+
+  # ─── Grafana ────────────────────────────────────────────────────────────────
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+        labels:
+          service: 'grafana'

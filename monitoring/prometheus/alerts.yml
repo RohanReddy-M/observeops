@@ -1,0 +1,176 @@
+# ─── Prometheus Alert Rules ───────────────────────────────────────────────────
+# Alert rules define CONDITIONS that, when true for a certain duration,
+# trigger an alert that gets sent to AlertManager.
+#
+# Structure of each alert:
+#   alert: name of the alert (shown in Slack/Grafana)
+#   expr:  PromQL expression - when this is TRUE, alert is "pending"
+#   for:   how long expr must be true before alert "fires" (avoids flapping)
+#   labels: metadata attached to the alert (severity, team, etc.)
+#   annotations: human-readable description shown in notification
+
+groups:
+
+  # ─── Service Availability Alerts ──────────────────────────────────────────
+  - name: service_availability
+    rules:
+
+      - alert: ServiceDown
+        # up == 0 means Prometheus couldn't scrape the target
+        # This means the service is completely unreachable
+        expr: up == 0
+        for: 1m    # Must be down for 1 full minute (avoids brief restart flaps)
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable for more than 1 minute. Check if the container is running: docker ps | grep {{ $labels.job }}"
+          runbook_url: "https://github.com/youruser/observeops/blob/main/docs/runbooks/service-down.md"
+
+      - alert: ContainerRestartingFrequently
+        # rate() calculates the per-second rate of change over 10 minutes
+        # If restarts are happening more than 0.05/sec = 3 per minute, alert fires
+        # This catches CrashLoopBackOff-style behavior
+        expr: rate(container_restarts_total[10m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.container }} is restarting frequently"
+          description: "Container has restarted more than 3 times in 10 minutes. Check logs: docker logs {{ $labels.container }}"
+
+  # ─── Error Rate Alerts ─────────────────────────────────────────────────────
+  - name: error_rates
+    rules:
+
+      - alert: HighErrorRate
+        # This PromQL expression:
+        # 1. Gets the rate of 5xx requests per second over 5 minutes
+        # 2. Divides by total request rate to get a percentage
+        # 3. Fires if error rate > 5%
+        expr: |
+          (
+            rate(http_requests_total{status_code=~"5.."}[5m])
+            /
+            rate(http_requests_total[5m])
+          ) * 100 > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanize }}% for {{ $labels.job }}. Normal is < 1%. Check logs in Grafana Loki dashboard."
+
+      - alert: CriticalErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status_code=~"5.."}[5m])
+            /
+            rate(http_requests_total[5m])
+          ) * 100 > 25
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanize }}% - service is degraded significantly."
+
+  # ─── Latency Alerts ────────────────────────────────────────────────────────
+  - name: latency
+    rules:
+
+      - alert: HighLatency
+        # histogram_quantile calculates the 99th percentile latency
+        # p99 > 2 seconds means 1% of requests take more than 2 seconds
+        # This catches slow queries, memory pressure, etc.
+        expr: |
+          histogram_quantile(0.99,
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 2
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p99 latency on {{ $labels.job }}"
+          description: "99th percentile latency is {{ $value | humanizeDuration }} for {{ $labels.job }}. Check if the instance is CPU or memory constrained."
+
+  # ─── Infrastructure Alerts ─────────────────────────────────────────────────
+  - name: infrastructure
+    rules:
+
+      - alert: HighCPUUsage
+        # node_cpu_seconds_total tracks CPU time by mode (idle, user, system, etc.)
+        # This expression calculates the percentage of time NOT spent idle
+        expr: |
+          (
+            1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))
+            by (instance)
+          ) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanize }}%. Run 'top' on the instance to identify the consuming process."
+
+      - alert: HighMemoryUsage
+        # node_memory_MemAvailable_bytes = RAM available for new processes
+        # node_memory_MemTotal_bytes = total RAM
+        # When available RAM is less than 10% of total, alert fires
+        expr: |
+          (
+            node_memory_MemAvailable_bytes
+            /
+            node_memory_MemTotal_bytes
+          ) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low memory on {{ $labels.instance }}"
+          description: "Only {{ $value | humanize }}% memory available. Check for memory leaks: docker stats"
+
+      - alert: DiskSpaceLow
+        # Fires when disk is more than 75% full
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            /
+            node_filesystem_size_bytes{mountpoint="/"}
+          ) * 100 < 25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk is {{ $value | humanize }}% free. Clean up logs or old Docker images: docker system prune"
+
+      - alert: DiskSpaceCritical
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            /
+            node_filesystem_size_bytes{mountpoint="/"}
+          ) * 100 < 10
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL disk space on {{ $labels.instance }}"
+          description: "Disk is almost full. Immediate action required or services will crash."
+
+  # ─── No Logs Alert ─────────────────────────────────────────────────────────
+  - name: observability
+    rules:
+
+      - alert: NoLogsReceived
+        # If Loki hasn't received any logs from a container in 5 minutes,
+        # either the container died or the log shipping broke
+        # This catches the "silent failure" problem
+        expr: absent(rate({container=~".+"}[5m]))
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No logs received from containers"
+          description: "Loki has received no container logs for 5 minutes. Check Promtail: docker logs promtail"

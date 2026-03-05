@@ -1,0 +1,207 @@
+# ─── Docker Compose - Local Development ──────────────────────────────────────
+# Docker Compose lets you run multiple containers together locally.
+# In production we deploy to EC2 manually or via CI/CD.
+# Locally we use this to test everything works before pushing.
+#
+# Usage:
+#   docker-compose up -d          # Start everything in background
+#   docker-compose logs -f        # Stream all logs
+#   docker-compose down           # Stop and remove containers
+#   docker-compose ps             # See what's running
+
+version: '3.8'
+
+services:
+
+  # ─── SecureShip API ─────────────────────────────────────────────────────────
+  secureship:
+    build:
+      context: ./apps/secureship
+      dockerfile: Dockerfile
+    container_name: secureship
+    ports:
+      - "8001:8001"           # host_port:container_port
+    environment:
+      - APP_VERSION=1.0.0
+      - ENVIRONMENT=local
+    # healthcheck tells Docker when the container is truly ready
+    # This is different from the Dockerfile HEALTHCHECK - this one
+    # affects docker-compose depends_on conditions
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    # Connect to our custom network so containers can find each other by name
+    networks:
+      - observeops
+    # Restart policy: always restart if container crashes
+    restart: unless-stopped
+
+  # ─── Status Service ──────────────────────────────────────────────────────────
+  statusservice:
+    build:
+      context: ./apps/statusservice
+      dockerfile: Dockerfile
+    container_name: statusservice
+    ports:
+      - "8002:8002"
+    environment:
+      - FAILURE_RATE=0        # Set to 0.5 to simulate 50% failure rate
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - observeops
+    restart: unless-stopped
+
+  # ─── Nginx Reverse Proxy ─────────────────────────────────────────────────────
+  # Nginx sits in front of both services.
+  # Without nginx: users hit port 8001 for secureship, 8002 for statusservice
+  # With nginx: users hit port 80, nginx routes based on URL path
+  # /api/* → secureship:8001
+  # /status/* → statusservice:8002
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "80:80"
+    volumes:
+      # Mount our nginx config into the container
+      # Changes to nginx.conf take effect after: docker-compose restart nginx
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - secureship
+      - statusservice
+    networks:
+      - observeops
+    restart: unless-stopped
+
+  # ─── Prometheus ──────────────────────────────────────────────────────────────
+  # Prometheus scrapes /metrics from our services every 15 seconds
+  # and stores the data in a time-series database on disk
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus    # Named volume persists data between restarts
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'    # Keep 15 days of metrics
+      - '--web.enable-lifecycle'               # Allows hot-reload of config
+    networks:
+      - observeops
+    restart: unless-stopped
+
+  # ─── Grafana ─────────────────────────────────────────────────────────────────
+  # Grafana connects to Prometheus and renders dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=observeops123
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - observeops
+    restart: unless-stopped
+
+  # ─── Loki ────────────────────────────────────────────────────────────────────
+  # Loki stores logs. Promtail ships logs TO Loki. Grafana reads FROM Loki.
+  # Think of it as: Promtail = log collector, Loki = log database, Grafana = log viewer
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - observeops
+    restart: unless-stopped
+
+  # ─── Promtail ────────────────────────────────────────────────────────────────
+  # Promtail watches Docker container logs and ships them to Loki
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    volumes:
+      - ./monitoring/loki/promtail-config.yml:/etc/promtail/config.yml:ro
+      # Mount Docker socket so Promtail can read container logs
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - observeops
+    restart: unless-stopped
+
+  # ─── AlertManager ────────────────────────────────────────────────────────────
+  # AlertManager receives alerts FROM Prometheus and routes them to Slack/email
+  # Prometheus detects the problem, AlertManager decides who gets notified
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+    networks:
+      - observeops
+    restart: unless-stopped
+
+  # ─── Node Exporter ───────────────────────────────────────────────────────────
+  # Exposes Linux system metrics (CPU, memory, disk, network) to Prometheus
+  # Without this, Prometheus only knows about your app metrics, not the host
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro      # Linux process info
+      - /sys:/host/sys:ro        # Linux hardware/kernel info
+      - /:/rootfs:ro             # Root filesystem (for disk metrics)
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - observeops
+    restart: unless-stopped
+
+# ─── Named Volumes ────────────────────────────────────────────────────────────
+# Volumes persist data even when containers are removed.
+# Without volumes, all Prometheus metrics and Grafana dashboards would be lost
+# every time you run docker-compose down.
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+# Custom bridge network: containers can reach each other by service name
+# e.g. prometheus can reach secureship at http://secureship:8001/metrics
+# Without this custom network, containers can only communicate by IP address
+networks:
+  observeops:
+    driver: bridge

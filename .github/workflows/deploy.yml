@@ -1,0 +1,226 @@
+# ─── GitHub Actions CI/CD Pipeline ───────────────────────────────────────────
+# This pipeline runs automatically when you push code to GitHub.
+#
+# Flow:
+# Push to any branch → test + build
+# Push to main       → test + build + deploy to production (with approval)
+#
+# Authentication:
+# We use OIDC (OpenID Connect) instead of storing AWS keys in GitHub Secrets.
+# OIDC = GitHub proves its identity to AWS, AWS issues temporary credentials.
+# Why: Static keys are a security risk. OIDC credentials are temporary (1 hour).
+#
+# SETUP REQUIRED:
+# 1. Create OIDC provider in AWS IAM for GitHub
+# 2. Create IAM role with ECR push + EC2 permissions
+# 3. Add these GitHub Secrets:
+#    - AWS_ROLE_ARN: arn:aws:iam::ACCOUNT_ID:role/github-actions-role
+#    - EC2_APP_HOST: private IP of app server  
+#    - EC2_SSH_KEY: private SSH key (keep .pem contents)
+#    - ECR_REGISTRY: ACCOUNT_ID.dkr.ecr.ap-south-1.amazonaws.com
+
+name: ObserveOps CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# Environment variables available to all jobs
+env:
+  AWS_REGION: ap-south-1
+  PYTHON_VERSION: '3.11'
+
+jobs:
+
+  # ─── Job 1: Test ────────────────────────────────────────────────────────────
+  # Runs on every push and PR. Pipeline stops here if tests fail.
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'    # Cache pip packages between runs (faster builds)
+
+      - name: Install SecureShip dependencies
+        run: pip install -r apps/secureship/requirements.txt
+
+      - name: Install test dependencies
+        run: pip install pytest httpx pytest-asyncio
+
+      - name: Run SecureShip tests
+        run: pytest apps/secureship/tests/ -v
+        # -v = verbose output, shows each test name
+
+      # Verify Docker build works (catches Dockerfile errors early)
+      - name: Verify Docker builds
+        run: |
+          docker build -t secureship-test apps/secureship/
+          docker build -t statusservice-test apps/statusservice/
+
+  # ─── Job 2: Build and Push ──────────────────────────────────────────────────
+  # Runs after tests pass. Builds Docker images and pushes to ECR.
+  build-push:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    needs: test    # Only runs if "test" job succeeded
+    
+    # Only run on pushes (not pull requests) - we don't push images for PRs
+    if: github.event_name == 'push'
+    
+    # Outputs let other jobs use values computed in this job
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # OIDC Authentication - no static keys needed
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # This action exchanges GitHub's OIDC token for temporary AWS credentials
+          # Credentials expire in 1 hour - much safer than long-lived keys
+
+      # ECR login so Docker can push to our private registry
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Generate image tags
+      # We tag with: git SHA (unique per commit) + branch name + latest (main only)
+      # Using git SHA means you can always trace an image back to the exact code commit
+      - name: Generate image metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "Image tag: ${SHORT_SHA}"
+
+      # Build and push SecureShip
+      - name: Build and push SecureShip
+        env:
+          REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build \
+            --tag "$REGISTRY/observeops/secureship:$TAG" \
+            --tag "$REGISTRY/observeops/secureship:${{ github.ref_name }}" \
+            --cache-from "$REGISTRY/observeops/secureship:latest" \
+            apps/secureship/
+          
+          docker push "$REGISTRY/observeops/secureship:$TAG"
+          docker push "$REGISTRY/observeops/secureship:${{ github.ref_name }}"
+          
+          # Also tag as 'latest' if this is the main branch
+          if [ "${{ github.ref_name }}" == "main" ]; then
+            docker tag "$REGISTRY/observeops/secureship:$TAG" "$REGISTRY/observeops/secureship:latest"
+            docker push "$REGISTRY/observeops/secureship:latest"
+          fi
+
+      # Build and push StatusService
+      - name: Build and push StatusService
+        env:
+          REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build \
+            --tag "$REGISTRY/observeops/statusservice:$TAG" \
+            --tag "$REGISTRY/observeops/statusservice:${{ github.ref_name }}" \
+            apps/statusservice/
+          
+          docker push "$REGISTRY/observeops/statusservice:$TAG"
+          docker push "$REGISTRY/observeops/statusservice:${{ github.ref_name }}"
+
+  # ─── Job 3: Deploy to Production ────────────────────────────────────────────
+  # Only runs on pushes to main branch, after build-push succeeds
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build-push
+    
+    # Only deploy on main branch pushes
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    # Environment with required reviewer approval
+    # In GitHub: Settings → Environments → Create "production" → Add reviewer
+    # This means someone must approve before the deployment runs
+    environment:
+      name: production
+      url: https://secureship.click
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # SSH to the EC2 instance and run the deploy script
+      # The deploy script handles: pulling new image, restarting containers,
+      # health checking, and rolling back if health check fails
+      - name: Deploy to EC2
+        env:
+          REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          TAG: ${{ needs.build-push.outputs.image-tag }}
+          HOST: ${{ secrets.EC2_APP_HOST }}
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          # Write SSH key to temp file
+          echo "$SSH_KEY" > /tmp/ssh_key
+          chmod 600 /tmp/ssh_key    # SSH requires private key to not be world-readable
+          
+          # Copy deploy script to EC2 and run it
+          scp -o StrictHostKeyChecking=no -i /tmp/ssh_key \
+            scripts/deploy.sh \
+            ubuntu@$HOST:/opt/observeops/deploy.sh
+          
+          ssh -o StrictHostKeyChecking=no -i /tmp/ssh_key ubuntu@$HOST \
+            "export ECR_REGISTRY=$REGISTRY && \
+             export SECURESHIP_IMAGE=$REGISTRY/observeops/secureship:$TAG && \
+             export STATUSSERVICE_IMAGE=$REGISTRY/observeops/statusservice:$TAG && \
+             bash /opt/observeops/deploy.sh"
+          
+          rm /tmp/ssh_key    # Clean up key immediately after use
+
+      # Post deployment annotation to Grafana
+      # This adds a vertical line on all dashboards showing exactly when we deployed
+      # Makes it easy to correlate issues with deployments
+      - name: Add Grafana deployment annotation
+        if: success()
+        env:
+          GRAFANA_URL: ${{ secrets.GRAFANA_URL }}
+          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
+        run: |
+          curl -s -X POST "$GRAFANA_URL/api/annotations" \
+            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \"Deploy: ${{ github.sha }} by ${{ github.actor }}\",
+              \"tags\": [\"deployment\", \"production\"]
+            }"
+
+      # Notify success
+      - name: Deployment success notification
+        if: success()
+        run: echo "✅ Deployment successful - ${{ github.sha }}"
+
+      # If deployment failed, the deploy script handles rollback automatically.
+      # This step just notifies.
+      - name: Deployment failure notification
+        if: failure()
+        run: echo "❌ Deployment failed - check logs above"
