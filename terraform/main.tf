@@ -35,7 +35,7 @@ terraform {
   #     --key-schema AttributeName=LockID,KeyType=HASH \
   #     --billing-mode PAY_PER_REQUEST
   backend "s3" {
-    bucket         = "observeops-terraform-state"    # Change to your bucket name
+    bucket = "observeops-terraform-state-198239799708"    # Change to your bucket name
     key            = "production/terraform.tfstate"
     region         = "ap-south-1"
     encrypt        = true
@@ -170,4 +170,18 @@ resource "aws_ecr_lifecycle_policy" "secureship" {
       action = { type = "expire" }
     }]
   })
+}
+module "alb" {
+  source = "./modules/alb"
+
+  project_name      = var.project_name
+  vpc_id            = module.vpc.vpc_id
+  public_subnet_ids = module.vpc.public_subnet_ids
+  alb_sg_id         = module.security.alb_sg_id
+  app_instance_id   = module.compute.app_instance_id
+  common_tags       = local.common_tags
+}
+
+output "alb_dns_name" {
+  value = module.alb.alb_dns_name
 }

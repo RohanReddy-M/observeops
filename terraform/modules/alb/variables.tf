@@ -6,13 +6,16 @@ variable "vpc_id" {
   type = string
 }
 
-variable "vpc_cidr" {
+variable "public_subnet_ids" {
+  type = list(string)
+}
+
+variable "alb_sg_id" {
   type = string
 }
 
-variable "admin_cidr" {
-  description = "27.4.76.173/32"
-  type        = string
+variable "app_instance_id" {
+  type = string
 }
 
 variable "common_tags" {
