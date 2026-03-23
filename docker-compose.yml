@@ -24,6 +24,7 @@ services:
     environment:
       - APP_VERSION=1.0.0
       - ENVIRONMENT=local
+      - GROQ_API_KEY=YOUR_GROQ_API_KEY_HERE
     # healthcheck tells Docker when the container is truly ready
     # This is different from the Dockerfile HEALTHCHECK - this one
     # affects docker-compose depends_on conditions
