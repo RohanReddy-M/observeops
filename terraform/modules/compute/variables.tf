@@ -42,3 +42,8 @@ variable "common_tags" {
   type    = map(string)
   default = {}
 }
+
+variable "groq_api_key" {
+  type      = string
+  sensitive = true
+}

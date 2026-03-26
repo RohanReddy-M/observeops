@@ -1,42 +1,67 @@
 #!/bin/bash
 set -e
-
-# Log everything
 exec > /var/log/user_data.log 2>&1
 
-echo "Starting user_data for ${project_name} in ${aws_region}"
-
-# Update system
-apt-get update -y
-apt-get upgrade -y
-
-# Install required packages
-apt-get install -y curl git unzip jq htop
+echo "Starting setup at $(date)"
 
 # Install Docker
 curl -fsSL https://get.docker.com | sh
 systemctl enable docker
 systemctl start docker
-usermod -aG docker ubuntu
 
-# Install Docker Compose plugin
-apt-get install -y docker-compose-v2
+# Install dependencies
+apt-get install -y git
 
-# Install AWS CLI v2
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-unzip /tmp/awscliv2.zip -d /tmp
-/tmp/aws/install
-
-# Create app directory
-mkdir -p /opt/observeops
-chown ubuntu:ubuntu /opt/observeops
-
-# Clone the repo
+# Clone repo
 git clone https://github.com/RohanReddy-M/observeops.git /opt/observeops
-chown -R ubuntu:ubuntu /opt/observeops
 
-# Start the stack
+# Fix AlertManager config with real Slack webhook
+cat > /opt/observeops/monitoring/alertmanager/alertmanager.yml << 'ALERTEOF'
+global:
+  resolve_timeout: 5m
+  slack_api_url: 'YOUR_SLACK_WEBHOOK_URL'
+route:
+  receiver: slack-warnings
+  group_by: [alertname, job]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: slack-critical
+      repeat_interval: 1h
+    - match:
+        severity: warning
+      receiver: slack-warnings
+receivers:
+  - name: slack-critical
+    slack_configs:
+      - channel: '#alerts-critical'
+        send_resolved: true
+        title: 'CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          *Summary:* {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
+  - name: slack-warnings
+    slack_configs:
+      - channel: '#alerts-warnings'
+        send_resolved: true
+        title: 'WARNING: {{ .GroupLabels.alertname }}'
+        text: |
+          *Summary:* {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: [alertname, job]
+ALERTEOF
+
+# Add GROQ API key to docker-compose
+sed -i 's/- GROQ_API_KEY=YOUR_GROQ_API_KEY_HERE/- GROQ_API_KEY=${groq_api_key}/' /opt/observeops/docker-compose.yml
+
+# Start stack
 cd /opt/observeops
-sudo -u ubuntu docker compose up -d
+docker compose up -d
 
-echo "Setup complete for ${project_name}"
+echo "Setup complete at $(date)"

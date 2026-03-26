@@ -134,9 +134,10 @@ resource "aws_instance" "app" {
   # User data: script that runs ONCE when instance first starts
   # This bootstraps our application automatically
   user_data = base64encode(templatefile("${path.module}/user_data_app.sh", {
-    project_name = var.project_name
-    aws_region   = var.aws_region
-  }))
+  project_name  = var.project_name
+  aws_region    = var.aws_region
+  groq_api_key  = var.groq_api_key
+}))
 
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-app-server"

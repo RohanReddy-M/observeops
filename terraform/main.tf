@@ -115,6 +115,7 @@ module "compute" {
   observability_sg_id = module.security.observability_sg_id
   public_key_path     = var.public_key_path
   common_tags         = local.common_tags
+  groq_api_key        = var.groq_api_key
 }
 
 # ─── Locals ───────────────────────────────────────────────────────────────────

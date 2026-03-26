@@ -46,4 +46,12 @@ variable "public_key_path" {
   description = "Path to your SSH public key"
   type        = string
   default     = "~/.ssh/id_rsa.pub"
+
 }
+
+variable "groq_api_key" {
+  type      = string
+  sensitive = true
+}
+
+
