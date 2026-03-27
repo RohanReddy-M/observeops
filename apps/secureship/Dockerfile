@@ -34,7 +34,9 @@ COPY --from=builder /install /usr/local
 COPY . .
 
 # Change ownership of app files to our non-root user
-RUN chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app && \
+    mkdir -p /home/appuser/.cache && \
+    chown -R appuser:appuser /home/appuser
 
 # Switch to non-root user for all subsequent commands
 USER appuser
