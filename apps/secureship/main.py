@@ -61,9 +61,9 @@ def init_rag():
     global vectorstore
     try:
         from langchain_community.vectorstores import FAISS
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from langchain_community.embeddings import FakeEmbeddings
         from langchain.text_splitter import RecursiveCharacterTextSplitter
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        embeddings = FakeEmbeddings(size=384)
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=20)
         docs = text_splitter.create_documents(SHIP_DOCUMENTS)
         vectorstore = FAISS.from_documents(docs, embeddings)
