@@ -31,7 +31,7 @@ class JSONFormatter(logging.Formatter):
             "level": record.levelname,
             "message": record.getMessage(),
             "logger": record.name,
-        }``
+        }
         # If the log has extra fields attached, include them
         if hasattr(record, 'extra'):
             log_object.update(record.extra)
