@@ -41,9 +41,10 @@ resource "aws_lb_target_group_attachment" "app" {
 }
 
 # ─── Route 53 Hosted Zone ─────────────────────────────────────────────────────
-data "aws_route53_zone" "main" {
-  name         = var.domain_name
-  private_zone = false
+# Managed by Terraform so it can be destroyed (zero cost) and recreated on demand.
+resource "aws_route53_zone" "main" {
+  name = var.domain_name
+  tags = var.common_tags
 }
 
 # ─── ACM Certificate ──────────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ resource "aws_route53_record" "cert_validation" {
   records         = [each.value.record]
   ttl             = 60
   type            = each.value.type
-  zone_id         = data.aws_route53_zone.main.zone_id
+  zone_id         = aws_route53_zone.main.zone_id
 }
 
 # Terraform waits here until AWS confirms the cert is issued (~2-5 min)
@@ -121,7 +122,7 @@ resource "aws_lb_listener" "http" {
 
 # ─── Route 53 A Record ────────────────────────────────────────────────────────
 resource "aws_route53_record" "app" {
-  zone_id = data.aws_route53_zone.main.zone_id
+  zone_id = aws_route53_zone.main.zone_id
   name    = var.domain_name
   type    = "A"
 

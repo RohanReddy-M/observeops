@@ -37,3 +37,8 @@ output "live_url" {
   description = "Public URL of the application"
   value       = "https://secureship.click"
 }
+
+output "route53_name_servers" {
+  description = "NS records — infra-up.sh syncs these to the domain registrar automatically"
+  value       = module.alb.route53_name_servers
+}

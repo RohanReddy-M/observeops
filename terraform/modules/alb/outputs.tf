@@ -12,3 +12,8 @@ output "target_group_arn" {
   description = "Target group ARN — used if you add auto-scaling later"
   value       = aws_lb_target_group.app.arn
 }
+
+output "route53_name_servers" {
+  description = "NS records for the hosted zone — must be set in domain registrar after each apply"
+  value       = aws_route53_zone.main.name_servers
+}
