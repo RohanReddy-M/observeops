@@ -1,0 +1,15 @@
+apiVersion: 1
+
+# Grafana provisioning: datasources load automatically on container start.
+# Without this, every new Grafana instance requires manual "Add datasource" clicks.
+# With this, the datasource is there the moment the container starts.
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy       # Grafana backend fetches from Prometheus (not the browser)
+    url: http://prometheus:9090
+    isDefault: true     # Default datasource for all new panels
+    editable: false     # Prevent accidental edits via UI (config is in git)
+    jsonData:
+      timeInterval: "15s"    # Match Prometheus scrape interval

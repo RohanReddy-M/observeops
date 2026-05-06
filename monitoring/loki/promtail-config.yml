@@ -1,0 +1,74 @@
+# ─── Promtail Configuration ───────────────────────────────────────────────────
+# Promtail is the log SHIPPER. It:
+# 1. Watches log sources (Docker container logs, files)
+# 2. Adds labels to logs (which container? which service?)
+# 3. Sends logs to Loki
+#
+# Think of it like: Promtail = fluentd/filebeat, Loki = Elasticsearch
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+# Tells Promtail where to store its position in log files
+# So if Promtail restarts, it continues from where it left off (no duplicate logs)
+positions:
+  filename: /tmp/positions.yaml
+
+# ─── Where to send logs ───────────────────────────────────────────────────────
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+# ─── What to collect ──────────────────────────────────────────────────────────
+scrape_configs:
+
+  # ─── Docker Container Logs ────────────────────────────────────────────────
+  # Reads logs from all Docker containers via the Docker socket
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        
+    # Relabeling: transform the raw Docker labels into Loki labels
+    # This is how we tag logs with "which container is this from?"
+    relabel_configs:
+      # Use container name as the "container" label in Loki
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      
+      # Use Docker image name as the "image" label
+      - source_labels: ['__meta_docker_container_image']
+        target_label: 'image'
+      
+      # Add job label
+      - replacement: docker
+        target_label: job
+        
+    # Pipeline stages: process the log line before storing
+    pipeline_stages:
+      # Try to parse log as JSON (our apps output JSON logs)
+      - json:
+          expressions:
+            level: level
+            message: message
+            timestamp: timestamp
+            
+      # If log has a "level" field, use it as a Loki label
+      # This lets you query: {container="secureship", level="ERROR"}
+      - labels:
+          level:
+          
+      # Set the timestamp from the log entry (not the collection time)
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+
+  # ─── System Logs ──────────────────────────────────────────────────────────
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          __path__: /var/log/syslog

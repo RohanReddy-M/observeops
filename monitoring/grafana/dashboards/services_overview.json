@@ -1,0 +1,320 @@
+{
+  "title": "ObserveOps — Services Overview",
+  "uid": "observeops-services",
+  "description": "Request rates, error rates, latency, and infrastructure health for all ObserveOps services",
+  "tags": ["observeops", "services"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "SecureShip",
+      "description": "1 = UP, 0 = DOWN",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "up{job=\"secureship\"}",
+        "legendFormat": "SecureShip"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": 2,
+      "title": "StatusService",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "up{job=\"statusservice\"}",
+        "legendFormat": "StatusService"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": 3,
+      "title": "RAGService",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "up{job=\"ragservice\"}",
+        "legendFormat": "RAGService"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": 4,
+      "title": "Prometheus",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "up{job=\"prometheus\"}",
+        "legendFormat": "Prometheus"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": 5,
+      "title": "Request Rate (req/s)",
+      "description": "HTTP requests per second across all services — spike = load, drop to zero = outage",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "rate(http_requests_total{job=\"secureship\"}[5m])",
+          "legendFormat": "SecureShip"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "rate(http_requests_total{job=\"statusservice\"}[5m])",
+          "legendFormat": "StatusService"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+
+    {
+      "id": 6,
+      "title": "Error Rate (%)",
+      "description": "Percentage of requests returning 5xx. Alert fires at 5%. Above 25% = critical.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "(rate(http_requests_total{job=\"secureship\",status_code=~\"5..\"}[5m]) / rate(http_requests_total{job=\"secureship\"}[5m])) * 100",
+          "legendFormat": "SecureShip error %"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "(rate(http_requests_total{job=\"statusservice\",status_code=~\"5..\"}[5m]) / rate(http_requests_total{job=\"statusservice\"}[5m])) * 100",
+          "legendFormat": "StatusService error %"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": { "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 25 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 7,
+      "title": "p99 Latency (seconds)",
+      "description": "99th percentile response time. 1% of users wait longer than this. Alert at 2s.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=\"secureship\"}[5m]))",
+          "legendFormat": "SecureShip p99"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=\"statusservice\"}[5m]))",
+          "legendFormat": "StatusService p99"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{job=\"secureship\"}[5m]))",
+          "legendFormat": "SecureShip p50"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 8,
+      "title": "CPU Usage (%)",
+      "description": "Host CPU — alert fires at 80%. Sustained high CPU = need to scale.",
+      "type": "gauge",
+      "gridPos": { "x": 0, "y": 20, "w": 8, "h": 6 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "(1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
+        "legendFormat": "CPU %"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "red", "value": 80 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 9,
+      "title": "Memory Available (%)",
+      "description": "Alert when available memory drops below 10%.",
+      "type": "gauge",
+      "gridPos": { "x": 8, "y": 20, "w": 8, "h": 6 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100",
+        "legendFormat": "Mem Available %"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 25 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 10,
+      "title": "Disk Free (%)",
+      "description": "DiskSpaceLow alert at <25%, DiskSpaceCritical at <10%.",
+      "type": "gauge",
+      "gridPos": { "x": 16, "y": 20, "w": 8, "h": 6 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "(node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"}) * 100",
+        "legendFormat": "Disk Free %"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 25 }
+            ]
+          }
+        }
+      }
+    }
+
+  ]
+}
