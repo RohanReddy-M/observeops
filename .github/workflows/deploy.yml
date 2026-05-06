@@ -300,31 +300,61 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # SSH to the EC2 instance and run the deploy script
-      # The deploy script handles: pulling new image, restarting containers,
-      # health checking, and rolling back if health check fails
-      - name: Deploy to EC2
+      # Deploy via AWS SSM — no SSH port or public IP needed.
+      # SSM tunnels the command through the AWS API to the private EC2.
+      - name: Deploy to EC2 via SSM
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.build-push.outputs.image-tag }}
           HOST: ${{ secrets.EC2_APP_HOST }}
-          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
         run: |
-          # Write SSH key to temp file
-          echo "$SSH_KEY" > /tmp/ssh_key
-          chmod 600 /tmp/ssh_key    # SSH requires private key to not be world-readable
-          
-          # Copy deploy script to EC2 and run it
-          scp -o StrictHostKeyChecking=no -i /tmp/ssh_key \
-            scripts/deploy.sh \
-            ubuntu@$HOST:/opt/observeops/deploy.sh
-          
-          ssh -o StrictHostKeyChecking=no -i /tmp/ssh_key ubuntu@$HOST \
-            "export ECR_REGISTRY=$REGISTRY && \
-             export IMAGE_TAG=$TAG && \
-             bash /opt/observeops/deploy.sh"
-          
-          rm /tmp/ssh_key    # Clean up key immediately after use
+          # Resolve private IP → instance ID (SSM needs instance ID, not IP)
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --region ${{ env.AWS_REGION }} \
+            --filters "Name=private-ip-address,Values=$HOST" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+          echo "Deploying to: $INSTANCE_ID ($HOST)"
+
+          # Send deploy command via SSM — runs as root on EC2, no port 22 needed
+          COMMAND_ID=$(aws ssm send-command \
+            --region ${{ env.AWS_REGION }} \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --cli-input-json "{
+              \"InstanceIds\": [\"$INSTANCE_ID\"],
+              \"DocumentName\": \"AWS-RunShellScript\",
+              \"Parameters\": {
+                \"commands\": [
+                  \"cd /opt/observeops && git pull\",
+                  \"ECR_REGISTRY=$REGISTRY IMAGE_TAG=$TAG APP_DIR=/opt/observeops AWS_REGION=${{ env.AWS_REGION }} bash /opt/observeops/scripts/deploy.sh\"
+                ],
+                \"executionTimeout\": [\"300\"]
+              }
+            }" \
+            --query "Command.CommandId" \
+            --output text)
+          echo "SSM command ID: $COMMAND_ID"
+
+          # Wait for command to finish (polls every 5s, max ~8 min)
+          aws ssm wait command-executed \
+            --region ${{ env.AWS_REGION }} \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          # Print output and fail the job if deploy failed
+          RESULT=$(aws ssm get-command-invocation \
+            --region ${{ env.AWS_REGION }} \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID")
+          echo "$RESULT" | jq -r '.StandardOutputContent'
+          STATUS=$(echo "$RESULT" | jq -r '.Status')
+          if [ "$STATUS" != "Success" ]; then
+            echo "❌ Deploy failed with status: $STATUS"
+            echo "$RESULT" | jq -r '.StandardErrorContent'
+            exit 1
+          fi
+          echo "✅ Deploy successful"
 
       # Post deployment annotation to Grafana
       # This adds a vertical line on all dashboards showing exactly when we deployed
