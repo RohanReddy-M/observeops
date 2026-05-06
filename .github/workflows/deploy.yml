@@ -310,7 +310,8 @@ jobs:
         run: |
           echo "Deploying to: $INSTANCE_ID"
 
-          # Send deploy command via SSM — runs as root on EC2, no port 22 needed
+          # Send deploy command via SSM.
+          # Run as ubuntu (owns /opt/observeops) — git rejects root ownership mismatch.
           COMMAND_ID=$(aws ssm send-command \
             --region ${{ env.AWS_REGION }} \
             --instance-ids "$INSTANCE_ID" \
@@ -320,8 +321,8 @@ jobs:
               \"DocumentName\": \"AWS-RunShellScript\",
               \"Parameters\": {
                 \"commands\": [
-                  \"cd /opt/observeops && git pull\",
-                  \"ECR_REGISTRY=$REGISTRY IMAGE_TAG=$TAG APP_DIR=/opt/observeops AWS_REGION=${{ env.AWS_REGION }} bash /opt/observeops/scripts/deploy.sh\"
+                  \"sudo -u ubuntu git -C /opt/observeops pull\",
+                  \"sudo -u ubuntu bash -c 'ECR_REGISTRY=$REGISTRY IMAGE_TAG=$TAG APP_DIR=/opt/observeops AWS_REGION=${{ env.AWS_REGION }} bash /opt/observeops/scripts/deploy.sh'\"
                 ],
                 \"executionTimeout\": [\"300\"]
               }
