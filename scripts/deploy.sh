@@ -45,7 +45,7 @@ fi
 # ─── Save Current Version for Rollback ───────────────────────────────────────
 # Before deploying, save which image is currently running
 # If the new deployment fails, we use this to roll back
-ROLLBACK_FILE="/tmp/observeops-previous-version"
+ROLLBACK_FILE="/opt/observeops/.previous-version"
 if docker ps --format '{{.Image}}' | grep -q secureship; then
     PREVIOUS_IMAGE=$(docker ps --format '{{.Image}}' | grep secureship)
     echo "$PREVIOUS_IMAGE" > "$ROLLBACK_FILE"
