@@ -360,6 +360,7 @@ jobs:
       # Makes it easy to correlate issues with deployments
       - name: Add Grafana deployment annotation
         if: success()
+        continue-on-error: true
         env:
           GRAFANA_URL: ${{ secrets.GRAFANA_URL }}
           GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
