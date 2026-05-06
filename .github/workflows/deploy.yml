@@ -230,18 +230,18 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           docker build \
-            --tag "$REGISTRY/observeops/secureship:$TAG" \
-            --tag "$REGISTRY/observeops/secureship:${{ github.ref_name }}" \
-            --cache-from "$REGISTRY/observeops/secureship:latest" \
+            --tag "$REGISTRY/secureship:$TAG" \
+            --tag "$REGISTRY/secureship:${{ github.ref_name }}" \
+            --cache-from "$REGISTRY/secureship:latest" \
             apps/secureship/
           
-          docker push "$REGISTRY/observeops/secureship:$TAG"
-          docker push "$REGISTRY/observeops/secureship:${{ github.ref_name }}"
+          docker push "$REGISTRY/secureship:$TAG"
+          docker push "$REGISTRY/secureship:${{ github.ref_name }}"
           
           # Also tag as 'latest' if this is the main branch
           if [ "${{ github.ref_name }}" == "main" ]; then
-            docker tag "$REGISTRY/observeops/secureship:$TAG" "$REGISTRY/observeops/secureship:latest"
-            docker push "$REGISTRY/observeops/secureship:latest"
+            docker tag "$REGISTRY/secureship:$TAG" "$REGISTRY/secureship:latest"
+            docker push "$REGISTRY/secureship:latest"
           fi
 
       # Build and push StatusService
@@ -251,11 +251,11 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           docker build \
-            --tag "$REGISTRY/observeops/statusservice:$TAG" \
-            --tag "$REGISTRY/observeops/statusservice:${{ github.ref_name }}" \
+            --tag "$REGISTRY/statusservice:$TAG" \
+            --tag "$REGISTRY/statusservice:${{ github.ref_name }}" \
             apps/statusservice/
-          docker push "$REGISTRY/observeops/statusservice:$TAG"
-          docker push "$REGISTRY/observeops/statusservice:${{ github.ref_name }}"
+          docker push "$REGISTRY/statusservice:$TAG"
+          docker push "$REGISTRY/statusservice:${{ github.ref_name }}"
 
       # RAGService image is larger (~2GB with PyTorch) — cache layers aggressively
       - name: Build and push RAGService
@@ -264,15 +264,15 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           docker build \
-            --tag "$REGISTRY/observeops/ragservice:$TAG" \
-            --tag "$REGISTRY/observeops/ragservice:${{ github.ref_name }}" \
-            --cache-from "$REGISTRY/observeops/ragservice:latest" \
+            --tag "$REGISTRY/ragservice:$TAG" \
+            --tag "$REGISTRY/ragservice:${{ github.ref_name }}" \
+            --cache-from "$REGISTRY/ragservice:latest" \
             apps/ragservice/
-          docker push "$REGISTRY/observeops/ragservice:$TAG"
-          docker push "$REGISTRY/observeops/ragservice:${{ github.ref_name }}"
+          docker push "$REGISTRY/ragservice:$TAG"
+          docker push "$REGISTRY/ragservice:${{ github.ref_name }}"
           if [ "${{ github.ref_name }}" == "main" ]; then
-            docker tag "$REGISTRY/observeops/ragservice:$TAG" "$REGISTRY/observeops/ragservice:latest"
-            docker push "$REGISTRY/observeops/ragservice:latest"
+            docker tag "$REGISTRY/ragservice:$TAG" "$REGISTRY/ragservice:latest"
+            docker push "$REGISTRY/ragservice:latest"
           fi
 
   deploy-production:
