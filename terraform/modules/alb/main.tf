@@ -1,33 +1,20 @@
 # ─── Application Load Balancer ────────────────────────────────────────────────
-# The ALB is the only thing that faces the internet.
+# Traffic flow: User → secureship.click → Route53 → ALB (HTTPS) → EC2 (HTTP)
 # EC2 instances live in private subnets — no public IPs, no direct access.
-# Traffic flow: User → secureship.click → Route53 → ALB → EC2 (private)
-#
-# Why ALB over NLB (Network Load Balancer)?
-# ALB works at Layer 7 (HTTP). It can:
-# - Route based on URL path (/api/* vs /status/*)
-# - Terminate SSL (HTTPS)
-# - Return health-based responses
-# NLB works at Layer 4 (TCP) - faster but dumb, just passes bytes through.
-# We use ALB because path-based routing and SSL termination matter to us.
 
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"
-  internal           = false             # internet-facing (has public IP)
-  load_balancer_type = "application"     # Layer 7, not Layer 4
+  internal           = false
+  load_balancer_type = "application"
   security_groups    = [var.alb_sg_id]
-  subnets            = var.public_subnet_ids  # ALB MUST be in public subnets
+  subnets            = var.public_subnet_ids
 
-  # Deletion protection: prevents accidental terraform destroy in production.
-  # Set false here so we can destroy for cost management during development.
   enable_deletion_protection = false
 
   tags = var.common_tags
 }
 
 # ─── Target Group ─────────────────────────────────────────────────────────────
-# A target group is a named set of instances/IPs that the ALB can route to.
-# The ALB health-checks each target. Only healthy targets receive traffic.
 resource "aws_lb_target_group" "app" {
   name     = "${var.project_name}-app-tg"
   port     = 80
@@ -36,32 +23,74 @@ resource "aws_lb_target_group" "app" {
 
   health_check {
     enabled             = true
-    path                = "/nginx-health"    # Our dedicated ALB health endpoint
-    healthy_threshold   = 2                  # 2 passes = healthy
-    unhealthy_threshold = 3                  # 3 failures = unhealthy (removed from rotation)
-    interval            = 30                 # Check every 30 seconds
-    timeout             = 5                  # Fail if no response in 5s
+    path                = "/nginx-health"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    interval            = 30
+    timeout             = 5
     matcher             = "200"
   }
 
   tags = var.common_tags
 }
 
-# Register the app EC2 instance as a target in the group
 resource "aws_lb_target_group_attachment" "app" {
   target_group_arn = aws_lb_target_group.app.arn
   target_id        = var.app_instance_id
   port             = 80
 }
 
-# ─── HTTP Listener ────────────────────────────────────────────────────────────
-# Listens on port 80, forwards all traffic to target group.
-# In a production setup with a TLS cert you'd add an HTTPS listener (443)
-# and redirect HTTP → HTTPS here.
-resource "aws_lb_listener" "http" {
+# ─── Route 53 Hosted Zone ─────────────────────────────────────────────────────
+data "aws_route53_zone" "main" {
+  name         = var.domain_name
+  private_zone = false
+}
+
+# ─── ACM Certificate ──────────────────────────────────────────────────────────
+# Request a free TLS cert for the domain. AWS validates ownership via DNS.
+resource "aws_acm_certificate" "main" {
+  domain_name       = var.domain_name
+  validation_method = "DNS"
+
+  # Must create before destroying old cert during updates
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = var.common_tags
+}
+
+# Route53 records that prove we own the domain (AWS checks these)
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = data.aws_route53_zone.main.zone_id
+}
+
+# Terraform waits here until AWS confirms the cert is issued (~2-5 min)
+resource "aws_acm_certificate_validation" "main" {
+  certificate_arn         = aws_acm_certificate.main.arn
+  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
+}
+
+# ─── HTTPS Listener (port 443) ────────────────────────────────────────────────
+resource "aws_lb_listener" "https" {
   load_balancer_arn = aws_lb.main.arn
-  port              = "80"
-  protocol          = "HTTP"
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate_validation.main.certificate_arn
 
   default_action {
     type             = "forward"
@@ -71,18 +100,26 @@ resource "aws_lb_listener" "http" {
   tags = var.common_tags
 }
 
-# ─── Route 53 DNS Record ──────────────────────────────────────────────────────
-# Look up the hosted zone for our domain (secureship.click).
-# This zone was created when the domain was registered in Route 53.
-data "aws_route53_zone" "main" {
-  name         = var.domain_name
-  private_zone = false
+# ─── HTTP → HTTPS Redirect ────────────────────────────────────────────────────
+# Anyone hitting port 80 gets redirected to HTTPS automatically
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+
+  tags = var.common_tags
 }
 
-# Create an A record: secureship.click → ALB
-# "Alias" is an AWS-specific DNS extension.
-# Unlike CNAME: an alias works for root domains (@), has no extra DNS lookup,
-# and is free (CNAME queries cost money on Route 53).
+# ─── Route 53 A Record ────────────────────────────────────────────────────────
 resource "aws_route53_record" "app" {
   zone_id = data.aws_route53_zone.main.zone_id
   name    = var.domain_name
@@ -91,6 +128,6 @@ resource "aws_route53_record" "app" {
   alias {
     name                   = aws_lb.main.dns_name
     zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true    # Remove from DNS if ALB is unhealthy
+    evaluate_target_health = true
   }
 }
