@@ -1,0 +1,17 @@
+apiVersion: 1
+
+# Dashboard provider: tells Grafana WHERE to look for dashboard JSON files.
+# Grafana will scan the path directory and load any .json files it finds.
+# When you add a new dashboard JSON file, Grafana picks it up within 30 seconds
+# without any restart required (hot reload).
+
+providers:
+  - name: ObserveOps
+    orgId: 1
+    type: file
+    disableDeletion: false      # Allow deletion via UI (it won't delete the file)
+    updateIntervalSeconds: 30   # Re-scan for new/changed JSON files every 30s
+    allowUiUpdates: true        # Allow editing dashboards in the UI
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

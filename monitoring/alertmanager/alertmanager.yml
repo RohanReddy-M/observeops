@@ -1,0 +1,110 @@
+# ─── AlertManager Configuration ──────────────────────────────────────────────
+# AlertManager receives alerts FROM Prometheus and routes them to receivers.
+# Prometheus detects the problem.
+# AlertManager decides: who gets notified, how, and how often.
+#
+# SETUP REQUIRED: Replace YOUR_SLACK_WEBHOOK_URL with your actual webhook.
+# How to get one:
+# 1. Go to https://api.slack.com/messaging/webhooks
+# 2. Create a Slack app, enable "Incoming Webhooks"
+# 3. Add webhook to a channel
+# 4. Copy the webhook URL
+
+global:
+  # How long to wait before re-sending a resolved alert
+  resolve_timeout: 5m
+
+# ─── Routing Tree ─────────────────────────────────────────────────────────────
+# Every alert enters at the root route and gets matched against routes.
+# First match wins. Unmatched alerts go to the default receiver.
+route:
+  # Default: log to null receiver when Slack is not configured (local dev).
+  # In production, change this to 'slack-warnings' and set SLACK_WEBHOOK_URL.
+  receiver: 'null'
+
+  # Group alerts together to avoid notification spam.
+  # All alerts with same alertname+job get grouped into one notification.
+  group_by: ['alertname', 'job']
+
+  # Wait 30s before sending first notification (collect related alerts)
+  group_wait: 30s
+
+  # Wait 5m before sending notifications for a new group
+  group_interval: 5m
+
+  # Wait 4h before re-sending the same alert
+  repeat_interval: 4h
+
+  # ─── Sub-routes ─────────────────────────────────────────────────────────────
+  routes:
+    # All firing alerts go through the LLM Autopilot first for diagnosis
+    - match:
+        alertstate: firing
+      receiver: 'llm-autopilot'
+      continue: true          # After autopilot, keep matching other routes below
+
+    # Critical alerts also go to Slack critical channel
+    - match:
+        severity: critical
+      receiver: 'slack-critical'
+      repeat_interval: 1h
+
+    # Warning alerts go to Slack warnings channel
+    - match:
+        severity: warning
+      receiver: 'slack-warnings'
+
+# ─── Receivers ────────────────────────────────────────────────────────────────
+# Receivers define WHERE and HOW to send notifications
+
+receivers:
+  # Null receiver: silently accepts alerts, sends nothing.
+  # Used as the default when Slack is not configured (local dev / CI).
+  - name: 'null'
+
+  # LLM Autopilot: POST to the autopilot webhook for every firing alert.
+  # The autopilot fetches Loki logs, diagnoses with Groq, and posts to Slack.
+  - name: 'llm-autopilot'
+    webhook_configs:
+      - url: 'http://autopilot:8004/webhook'
+        send_resolved: false    # Only diagnose firing alerts, not resolved ones
+
+  - name: 'slack-critical'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/REPLACE/WITH/REAL_WEBHOOK'
+        channel: '#alerts-critical'
+        # send_resolved: true means we get notified when the alert resolves too
+        send_resolved: true
+        title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          {{ if .Annotations.runbook_url }}*Runbook:* {{ .Annotations.runbook_url }}{{ end }}
+          {{ end }}
+
+  - name: 'slack-warnings'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/REPLACE/WITH/REAL_WEBHOOK'
+        channel: '#alerts-warnings'
+        send_resolved: true
+        title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'
+        text: |
+          *Alert:* {{ .GroupLabels.alertname }}
+          {{ range .Alerts }}
+          *Summary:* {{ .Annotations.summary }}
+          {{ end }}
+
+# ─── Inhibition Rules ─────────────────────────────────────────────────────────
+# Inhibition suppresses certain alerts when other alerts are firing.
+# Example: If ServiceDown is firing, don't also send HighErrorRate
+# (the service being down IS the cause of the errors - don't double-alert)
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    # Inhibit warning if critical alert for same job is already firing
+    equal: ['alertname', 'job']
