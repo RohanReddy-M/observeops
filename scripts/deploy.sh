@@ -81,8 +81,11 @@ fi
 # The EC2 instance uses its IAM role for authentication (no credentials needed).
 if [ -n "$ECR_REGISTRY" ]; then
     log_info "Logging into ECR..."
+    # ECR_REGISTRY may include a namespace path (e.g. 123.dkr.ecr.region.amazonaws.com/observeops)
+    # docker login needs only the registry hostname
+    REGISTRY_HOST=$(echo "$ECR_REGISTRY" | cut -d'/' -f1)
     aws ecr get-login-password --region "$AWS_REGION" | \
-        docker login --username AWS --password-stdin "$ECR_REGISTRY"
+        docker login --username AWS --password-stdin "$REGISTRY_HOST"
 fi
 
 # ─── Pull Latest Images ───────────────────────────────────────────────────────
