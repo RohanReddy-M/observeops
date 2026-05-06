@@ -306,15 +306,9 @@ jobs:
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.build-push.outputs.image-tag }}
-          HOST: ${{ secrets.EC2_APP_HOST }}
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
         run: |
-          # Resolve private IP → instance ID (SSM needs instance ID, not IP)
-          INSTANCE_ID=$(aws ec2 describe-instances \
-            --region ${{ env.AWS_REGION }} \
-            --filters "Name=private-ip-address,Values=$HOST" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --output text)
-          echo "Deploying to: $INSTANCE_ID ($HOST)"
+          echo "Deploying to: $INSTANCE_ID"
 
           # Send deploy command via SSM — runs as root on EC2, no port 22 needed
           COMMAND_ID=$(aws ssm send-command \
