@@ -7,4 +7,7 @@ variable "admin_cidr" {
   # /32 means exactly one IP address
   # Example: "203.0.113.10/32"
 }
-variable "common_tags" { type = map(string); default = {} }
+variable "common_tags" {
+  type    = map(string)
+  default = {}
+}

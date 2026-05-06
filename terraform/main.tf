@@ -35,7 +35,7 @@ terraform {
   #     --key-schema AttributeName=LockID,KeyType=HASH \
   #     --billing-mode PAY_PER_REQUEST
   backend "s3" {
-    bucket         = "observeops-terraform-state"    # Change to your bucket name
+    bucket         = "observeops-terraform-state-198239799708"
     key            = "production/terraform.tfstate"
     region         = "ap-south-1"
     encrypt        = true
