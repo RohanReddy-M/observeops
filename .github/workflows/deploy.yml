@@ -301,55 +301,59 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # Deploy via AWS SSM — no SSH port or public IP needed.
-      # SSM tunnels the command through the AWS API to the private EC2.
+      # Writes a deploy script to the EC2 first, then runs it as ubuntu.
       - name: Deploy to EC2 via SSM
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.build-push.outputs.image-tag }}
           INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
         run: |
-          echo "Deploying to: $INSTANCE_ID"
+          echo "Deploying $TAG to $INSTANCE_ID"
 
-          # Send deploy command via SSM.
-          # Run as ubuntu (owns /opt/observeops) — git rejects root ownership mismatch.
+          # Step 1: write a self-contained deploy script to the EC2.
+          # This avoids all shell-quoting issues with env vars inside SSM JSON.
+          WRITE_ID=$(aws ssm send-command \
+            --region ${{ env.AWS_REGION }} \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"cat > /tmp/ci_deploy.sh << 'DEPLOY_EOF'\n#!/bin/bash\nset -e\ngit config --global --add safe.directory /opt/observeops\ncd /opt/observeops && git pull\nexport ECR_REGISTRY=$REGISTRY\nexport IMAGE_TAG=$TAG\nexport APP_DIR=/opt/observeops\nexport AWS_REGION=${{ env.AWS_REGION }}\nbash /opt/observeops/scripts/deploy.sh\nDEPLOY_EOF\nchmod +x /tmp/ci_deploy.sh\"]" \
+            --query "Command.CommandId" --output text)
+          sleep 5
+
+          # Step 2: run the script as ubuntu (owns /opt/observeops)
           COMMAND_ID=$(aws ssm send-command \
             --region ${{ env.AWS_REGION }} \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --cli-input-json "{
-              \"InstanceIds\": [\"$INSTANCE_ID\"],
-              \"DocumentName\": \"AWS-RunShellScript\",
-              \"Parameters\": {
-                \"commands\": [
-                  \"sudo -u ubuntu git -C /opt/observeops pull\",
-                  \"sudo -u ubuntu bash -c 'ECR_REGISTRY=$REGISTRY IMAGE_TAG=$TAG APP_DIR=/opt/observeops AWS_REGION=${{ env.AWS_REGION }} bash /opt/observeops/scripts/deploy.sh'\"
-                ],
-                \"executionTimeout\": [\"300\"]
-              }
-            }" \
-            --query "Command.CommandId" \
-            --output text)
+            --parameters "commands=[\"runuser -l ubuntu -c 'bash /tmp/ci_deploy.sh'\"],executionTimeout=[\"360\"]" \
+            --query "Command.CommandId" --output text)
           echo "SSM command ID: $COMMAND_ID"
 
-          # Wait for command to finish (polls every 5s, max ~8 min)
-          aws ssm wait command-executed \
-            --region ${{ env.AWS_REGION }} \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"
-
-          # Print output and fail the job if deploy failed
-          RESULT=$(aws ssm get-command-invocation \
-            --region ${{ env.AWS_REGION }} \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID")
-          echo "$RESULT" | jq -r '.StandardOutputContent'
-          STATUS=$(echo "$RESULT" | jq -r '.Status')
-          if [ "$STATUS" != "Success" ]; then
-            echo "❌ Deploy failed with status: $STATUS"
-            echo "$RESULT" | jq -r '.StandardErrorContent'
-            exit 1
-          fi
-          echo "✅ Deploy successful"
+          # Poll until done (max 8 min)
+          for i in $(seq 1 48); do
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation \
+              --region ${{ env.AWS_REGION }} \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "Status" --output text 2>/dev/null || echo "Pending")
+            echo "[$i] Status: $STATUS"
+            if [ "$STATUS" = "Success" ]; then
+              echo "✅ Deploy successful"
+              exit 0
+            fi
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              echo "❌ Deploy failed with status: $STATUS"
+              aws ssm get-command-invocation \
+                --region ${{ env.AWS_REGION }} \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --query "StandardErrorContent" --output text 2>/dev/null || true
+              exit 1
+            fi
+          done
+          echo "❌ Deploy timed out after 8 minutes"
+          exit 1
 
       # Post deployment annotation to Grafana
       # This adds a vertical line on all dashboards showing exactly when we deployed
