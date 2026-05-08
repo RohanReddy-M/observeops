@@ -43,5 +43,8 @@ terraform destroy -auto-approve \
   -target=module.alb.aws_route53_record.cert_validation
 
 echo ""
+echo "==> Clearing EC2_INSTANCE_ID GitHub secret so CI/CD skips deploy..."
+gh secret set EC2_INSTANCE_ID --body "" --repo RohanReddy-M/observeops 2>/dev/null || true
+
 echo "==> Billing stopped. Route53 zone kept (₹42/month — avoids DNS issues)."
 echo "    Run scripts/infra-up.sh next time you need it live."
