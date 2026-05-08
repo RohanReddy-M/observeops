@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: secureship
+  namespace: observeops
+spec:
+  # ClusterIP = internal only. The Ingress routes external traffic here.
+  # Never expose application pods directly with LoadBalancer — use Ingress.
+  type: ClusterIP
+  selector:
+    app: secureship
+  ports:
+    - port: 8001
+      targetPort: 8001

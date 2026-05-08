@@ -1,0 +1,51 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: observeops
+  namespace: observeops
+  annotations:
+    # On EKS: use AWS Load Balancer Controller instead of nginx ingress.
+    # It provisions an ALB natively, integrates with ACM certs, and is
+    # the standard approach for production EKS deployments.
+    kubernetes.io/ingress.class: "alb"
+    alb.ingress.kubernetes.io/scheme: "internet-facing"
+    alb.ingress.kubernetes.io/target-type: "ip"
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:198239799708:certificate/YOUR_CERT_ARN"
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/healthcheck-path: "/health"
+
+    # For local development with kind, switch to nginx ingress controller:
+    # kubernetes.io/ingress.class: "nginx"
+spec:
+  rules:
+    - host: secureship.click
+      http:
+        paths:
+          # AI/RAG endpoints — LLM calls can take 5-30s so these must
+          # hit ragservice directly, not the main API
+          - path: /ai/
+            pathType: Prefix
+            backend:
+              service:
+                name: ragservice
+                port:
+                  number: 8003
+
+          # Status/metrics endpoints
+          - path: /status/
+            pathType: Prefix
+            backend:
+              service:
+                name: statusservice
+                port:
+                  number: 8002
+
+          # All other traffic goes to the main API
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: secureship
+                port:
+                  number: 8001

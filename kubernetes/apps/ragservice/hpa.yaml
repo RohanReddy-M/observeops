@@ -1,0 +1,28 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ragservice
+  namespace: observeops
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ragservice
+  # RAGService is memory-heavy (2Gi per pod). Keep min=1, max=3 to avoid
+  # blowing up the cluster budget during scale-out events.
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      # Wait 2 minutes before scaling — LLM requests are slow, don't mistake
+      # a single slow query for sustained high load
+      stabilizationWindowSeconds: 120
+    scaleDown:
+      stabilizationWindowSeconds: 600
