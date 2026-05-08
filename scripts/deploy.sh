@@ -140,8 +140,14 @@ docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps statusservice
 log_info "Deploying RAGService..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps ragservice
 
-log_info "Updating nginx and monitoring stack..."
-docker compose -f "$APP_DIR/docker-compose.yml" up -d nginx prometheus grafana loki promtail alertmanager node-exporter
+log_info "Starting monitoring stack..."
+docker compose -f "$APP_DIR/docker-compose.yml" up -d prometheus grafana loki promtail alertmanager node-exporter
+
+# nginx resolves upstream hostnames at startup — start it after monitoring containers
+# are registered in Docker DNS to prevent "host not found" crash loop.
+sleep 3
+log_info "Starting nginx..."
+docker compose -f "$APP_DIR/docker-compose.yml" up -d nginx
 
 # ─── Post-Deploy Smoke Tests ──────────────────────────────────────────────────
 # Smoke tests verify the deployment didn't break basic functionality.
