@@ -172,14 +172,15 @@ jobs:
         env:
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
           AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
         run: |
-          if [ -n "$ECR_REGISTRY" ] && [ -n "$AWS_ROLE_ARN" ]; then
+          if [ -n "$ECR_REGISTRY" ] && [ -n "$AWS_ROLE_ARN" ] && [ -n "$EC2_INSTANCE_ID" ]; then
             echo "configured=true" >> $GITHUB_OUTPUT
             echo "✓ AWS secrets configured — proceeding with build & deploy"
           else
             echo "configured=false" >> $GITHUB_OUTPUT
-            echo "⚠ AWS secrets not set — skipping build & deploy"
-            echo "  Set ECR_REGISTRY and AWS_ROLE_ARN in GitHub Secrets to enable"
+            echo "⚠ AWS secrets not set or infra is down — skipping build & deploy"
+            echo "  Run scripts/infra-up.sh to bring infra up and set secrets"
           fi
 
   # ─── Job 4: Build and Push ──────────────────────────────────────────────────
