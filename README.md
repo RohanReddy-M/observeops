@@ -1,8 +1,24 @@
 # ObserveOps Platform
 
-Production-grade DevOps + MLOps platform on AWS. Demonstrates infrastructure ownership, CI/CD maturity, full-stack observability, AI-assisted incident response, and LLMOps.
+Production-grade DevOps + MLOps platform on AWS. End-to-end ownership: infrastructure provisioning, containerized services, CI/CD, full-stack observability, Kubernetes manifests, and AI-assisted incident response.
 
-**Live:** https://secureship.click
+**Live:** https://secureship.click &nbsp;|&nbsp; **Stack:** AWS · Terraform · Docker · Kubernetes · GitHub Actions · Python
+
+![CI/CD](https://github.com/RohanReddy-M/observeops/actions/workflows/deploy.yml/badge.svg)
+
+---
+
+## What this covers
+
+| Area | Technology | Detail |
+|------|-----------|--------|
+| Infrastructure | Terraform | VPC, EC2, ALB, Route53, ACM, ECR, SSM — fully IaC |
+| Containers | Docker Compose + Kubernetes | Dev: Compose · Prod-ready: EKS manifests with HPA |
+| CI/CD | GitHub Actions | Test → Security scan → Build/push → Deploy → Rollback |
+| Auth | OIDC (no static credentials) | GitHub → AWS IAM via OIDC federation |
+| Observability | Prometheus + Grafana + Loki | Metrics, dashboards, structured logs, alerting |
+| AI / GenAI | RAG pipeline (LangChain + LangGraph + FAISS + Groq) | Grounded incident response assistant |
+| Security | IMDSv2, private subnets, SSM Parameter Store, Trivy, Bandit | Defence-in-depth across all layers |
 
 ---
 
@@ -12,36 +28,73 @@ Production-grade DevOps + MLOps platform on AWS. Demonstrates infrastructure own
 Internet
     │
     ▼
-Route 53 (DNS: secureship.click)
+Route 53 (secureship.click)
     │
     ▼
-AWS ALB (HTTP:80) ──────────────── public subnet
+AWS ALB  ─── HTTPS :443 (ACM cert, TLS 1.3)
+    │         HTTP :80  → redirect to HTTPS
     │
-    │  path-based routing:
-    │  /api/*      → SecureShip:8001
+    │  Path-based routing:
+    │  /api/*      → SecureShip   :8001
     │  /status/*   → StatusService:8002
-    │  /ai/*       → RAGService:8003
-    │  /grafana/*  → Grafana:3000
+    │  /ai/*       → RAGService   :8003
+    │  /grafana/*  → Grafana      :3000
     │
-    ▼
-Private Subnet
+    ▼ Private Subnet (no public IPs)
     ├── EC2: App Server (t3.small)
-    │       ├── secureship    (FastAPI, :8001)
-    │       ├── statusservice (Flask,   :8002)
-    │       ├── ragservice    (FastAPI, :8003)  ← AI pipeline
-    │       ├── nginx         (reverse proxy, :80)
+    │       ├── secureship    (FastAPI)
+    │       ├── statusservice (Flask)
+    │       ├── ragservice    (FastAPI + LangGraph)
+    │       ├── nginx         (reverse proxy, runtime DNS resolver)
     │       └── promtail      (log shipper → Loki)
     │
     └── EC2: Observability Server (t3.small)
-            ├── prometheus   (:9090)
-            ├── grafana      (:3000)
-            ├── loki         (:3100)
-            ├── alertmanager (:9093)
-            └── node-exporter(:9100)
+            ├── prometheus   — metrics scrape
+            ├── grafana      — dashboards
+            ├── loki         — log aggregation
+            ├── alertmanager — alert routing
+            └── node-exporter— host metrics
 
 VPC: 10.0.0.0/16
   Public:  10.0.1.0/24, 10.0.2.0/24  (ALB, NAT Gateway)
-  Private: 10.0.3.0/24, 10.0.4.0/24  (EC2 instances — no public IPs)
+  Private: 10.0.3.0/24, 10.0.4.0/24  (EC2 — unreachable from internet)
+```
+
+---
+
+## Kubernetes (EKS-ready) — `kubernetes/`
+
+Full production manifests for running ObserveOps on EKS. Also runs locally with `kind` (free).
+
+```
+Internet → AWS ALB (Load Balancer Controller)
+              ↓
+         Ingress (path-based)
+         ├── /ai/*      → ragservice   (1–3 pods, HPA on CPU)
+         ├── /status/*  → statusservice (2 pods)
+         └── /*         → secureship   (2–10 pods, HPA on CPU + memory)
+
+Monitoring:
+  Prometheus → scrapes all pods (PVC-backed)
+  Grafana    → dashboards       (PVC-backed)
+  Loki       → log aggregation  (PVC-backed)
+```
+
+**Design decisions:**
+- Spot instances — 70% cost reduction for stateless pods
+- Separate `ai-nodes` node group with `NoSchedule` taint — RAGService needs 2 Gi+ for PyTorch; keeps AI workload off app nodes
+- `maxUnavailable: 0` rolling updates — zero-downtime deploys
+- HPA scale-up: fast (30 s window for secureship) · scale-down: slow (5 min) to prevent thrashing
+- All services ClusterIP — no pod directly reachable; all external traffic through Ingress/ALB
+
+```bash
+# Run locally (no AWS needed)
+kind create cluster --name observeops
+kubectl apply -f kubernetes/namespace.yaml
+kubectl apply -f kubernetes/apps/
+kubectl apply -f kubernetes/monitoring/
+kubectl apply -f kubernetes/ingress/ingress.yaml
+kubectl get hpa -n observeops
 ```
 
 ---
@@ -62,7 +115,7 @@ FastAPI shipment management service. Primary demo API.
 **Metrics exposed:** `http_requests_total`, `http_request_duration_seconds`, `app_info`
 
 ### StatusService — `apps/statusservice/`
-Flask service with built-in failure and load simulation. Used to trigger real alerts.
+Flask service with built-in failure and load simulation — used to trigger real alerts.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -71,13 +124,13 @@ Flask service with built-in failure and load simulation. Used to trigger real al
 | `GET /fail` | Simulate failures (set `FAILURE_RATE=0.5` for 50% errors) |
 
 ### RAGService — `apps/ragservice/`
-AI-powered incident response assistant. Answers natural-language questions about your infrastructure using Retrieval-Augmented Generation.
+AI-powered incident response assistant. Answers natural-language questions about your infrastructure.
 
 **How it works:**
 1. Documents (runbooks, incident logs, architecture notes) are embedded with `all-MiniLM-L6-v2` and stored in a FAISS vector index
 2. On each query, the top-4 most similar chunks are retrieved
-3. A LangGraph agent grades relevance — if docs are relevant, the Groq LLM generates a grounded answer; if not, it says "I don't have context" instead of hallucinating
-4. All LLM calls are tracked with Prometheus metrics (latency, errors, grounding rate)
+3. A LangGraph agent grades relevance — if docs are relevant, Groq LLM generates a grounded answer; if not, it says "I don't have context" instead of hallucinating
+4. All LLM calls tracked with Prometheus metrics (latency, errors, grounding rate)
 
 | Endpoint | Description |
 |----------|-------------|
@@ -86,9 +139,8 @@ AI-powered incident response assistant. Answers natural-language questions about
 | `GET /health` | Health check (includes `vector_store_ready`) |
 | `GET /metrics` | LLMOps Prometheus metrics |
 
-**Example:**
 ```bash
-curl -X POST http://localhost:8003/query \
+curl -X POST https://secureship.click/ai/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What do I do when SecureShip goes down?"}'
 ```
@@ -101,24 +153,56 @@ curl -X POST http://localhost:8003/query \
 
 ```
 terraform/
-├── main.tf              # Root: calls all modules, ECR repos
+├── main.tf              # Root module — calls all child modules, ECR repos
 ├── variables.tf
 ├── outputs.tf
 └── modules/
     ├── vpc/             # VPC, subnets, IGW, NAT Gateway, route tables
     ├── security/        # Security groups (ALB, App, Observability)
-    ├── compute/         # EC2 instances, IAM role, SSH key pair
-    │   ├── user_data_app.sh   # App server bootstrap (Docker + services)
-    │   └── user_data_obs.sh   # Obs server bootstrap (monitoring stack)
-    └── alb/             # Application Load Balancer + Route53 A record
+    ├── compute/         # EC2 instances, IAM role, key pair
+    │   ├── user_data_app.sh   # App server bootstrap
+    │   └── user_data_obs.sh   # Observability server bootstrap
+    └── alb/             # ALB, ACM cert, Route53 zone + validation records
 ```
 
 **Security hardening:**
-- EC2 instances in **private subnets** — no public IPs, no direct internet access
-- IMDSv2 enforced on all EC2 instances (blocks SSRF credential theft)
-- Secrets fetched from **SSM Parameter Store** at boot (never in user data or git)
+- EC2 in **private subnets** — no public IPs, no direct internet exposure
+- IMDSv2 enforced — blocks SSRF-based credential theft via metadata endpoint
+- Secrets in **SSM Parameter Store** — never in user data, env files, or git
 - IAM roles scoped to minimum permissions (ECR pull, SSM read, CloudWatch write)
-- OIDC authentication in CI/CD — zero static AWS credentials
+- OIDC in CI/CD — zero static AWS credentials in GitHub or anywhere else
+
+---
+
+## CI/CD Pipeline — `.github/workflows/deploy.yml`
+
+```
+Push to any branch
+    └── [Job 1] test
+            ├── pytest (secureship, ragservice)
+            └── docker build smoke test
+
+Push to develop / main
+    └── [Job 2] security-scan  (needs: test)
+            ├── Trivy  — CVE scan of all dependencies
+            ├── Bandit — Python SAST (fails on HIGH severity)
+            └── TruffleHog — git history secret scan
+
+    └── [Job 3] build-push  (needs: test + security-scan)
+            ├── Build SecureShip   → push to ECR
+            ├── Build StatusService→ push to ECR
+            └── Build RAGService   → push to ECR (layer-cached, ~2 GB image)
+
+Push to main only
+    └── [Job 4] deploy-production  (manual approval gate)
+            ├── AWS SSM Run Command — no SSH, no open ports
+            ├── Rolling deploy + smoke-test (7 endpoints)
+            ├── Auto-rollback if any health check fails
+            └── Grafana deployment annotation
+```
+
+**Auth:** GitHub OIDC → AWS IAM role. No static credentials anywhere.
+**Token scope:** `contents: read` · `id-token: write` · `security-events: write` only.
 
 ---
 
@@ -127,76 +211,46 @@ terraform/
 ### Metrics — Prometheus + Grafana
 Two pre-provisioned dashboards (auto-load on container start):
 
-**Services Overview** (`monitoring/grafana/dashboards/services_overview.json`)
-- Service up/down status (stat panels with color coding)
-- Request rate per service (req/s over time)
-- Error rate % with threshold markers (5% = warning, 25% = critical)
+**Services Overview**
+- Service up/down (stat panels, color-coded)
+- Request rate per service (req/s)
+- Error rate % with threshold markers (5% warning, 25% critical)
 - p50/p99 latency per service
 - CPU, memory, disk gauges
 
-**LLM & RAG Metrics** (`monitoring/grafana/dashboards/llm_metrics.json`)
+**LLM & RAG Metrics**
 - Total RAG queries and grounded response rate
 - LLM API error rate (alert at 10%)
 - p50/p95/p99 LLM response latency
-- Grounded vs ungrounded answer distribution (donut chart)
-- Vector store document count over time
+- Grounded vs ungrounded distribution (donut chart)
+- Vector store document count
 
 ### Logs — Loki + Promtail
-- JSON structured logs from all containers (uniform format across services)
+- JSON structured logs from all containers
 - Labels: `container`, `level`, `service`
 - Queryable with LogQL in Grafana
 
 ### Alerts — AlertManager
 | Alert | Condition | Severity |
 |-------|-----------|----------|
-| ServiceDown | `up == 0` for 1m | critical |
-| HighErrorRate | 5xx > 5% for 2m | warning |
-| CriticalErrorRate | 5xx > 25% for 1m | critical |
-| HighLatency | p99 > 2s for 3m | warning |
-| HighCPU | CPU > 80% for 5m | warning |
+| ServiceDown | `up == 0` for 1 m | critical |
+| HighErrorRate | 5xx > 5% for 2 m | warning |
+| CriticalErrorRate | 5xx > 25% for 1 m | critical |
+| HighLatency | p99 > 2 s for 3 m | warning |
+| HighCPU | CPU > 80% for 5 m | warning |
 | DiskSpaceLow | disk < 25% free | warning |
 | DiskSpaceCritical | disk < 10% free | critical |
-| NoLogsReceived | no logs for 5m | warning |
-| **LLMHighErrorRate** | LLM errors > 10% for 2m | warning |
-| **LLMHighLatency** | LLM p95 > 15s for 3m | warning |
-| **RAGHighUngroundedRate** | ungrounded > 50% for 5m | warning |
-| **RAGServiceDown** | ragservice up == 0 for 1m | critical |
-
----
-
-## CI/CD Pipeline — `.github/workflows/deploy.yml`
-
-```
-Push to any branch
-    └── [Job 1] test — pytest, docker build verification
-
-Push to develop / main
-    └── [Job 2] security-scan (runs after test)
-            ├── Trivy — CVE scan of all dependencies
-            ├── Bandit — Python SAST (fails on HIGH severity)
-            └── TruffleHog — git history secret scan
-
-    └── [Job 3] build-push (needs: test + security-scan)
-            ├── Build SecureShip → push to ECR
-            ├── Build StatusService → push to ECR
-            └── Build RAGService → push to ECR (cached, ~2GB image)
-
-Push to main only:
-    └── [Job 4] deploy-production (manual approval gate)
-            ├── SSH to EC2, run rolling deploy script
-            ├── Smoke-test 7 endpoints
-            ├── Auto-rollback if any health check fails
-            └── Post deployment annotation to Grafana
-```
-
-**Authentication:** GitHub OIDC → AWS IAM role. Zero static credentials anywhere.
-**Token scope:** `contents: read`, `id-token: write`, `security-events: write` only.
+| NoLogsReceived | no logs for 5 m | warning |
+| LLMHighErrorRate | LLM errors > 10% for 2 m | warning |
+| LLMHighLatency | LLM p95 > 15 s for 3 m | warning |
+| RAGHighUngroundedRate | ungrounded > 50% for 5 m | warning |
+| RAGServiceDown | ragservice up == 0 for 1 m | critical |
 
 ---
 
 ## RAG Quality Evaluation — `scripts/eval_rag.py`
 
-Automated test suite that measures answer quality against known questions. Run in CI to catch regressions when prompts or documents change.
+Automated test suite that measures answer quality against known questions. Runs in CI to catch regressions when prompts or documents change.
 
 ```bash
 python scripts/eval_rag.py                          # test localhost
@@ -211,32 +265,25 @@ Exit 0 = pass (CI-safe). Exit 1 = quality below threshold.
 ## Local Development
 
 ```bash
-# Copy env template and add your Groq API key (free at console.groq.com)
-cp .env.example .env
-
-# Start all 11 services
-docker compose up -d
+cp .env.example .env          # add Groq API key (free at console.groq.com)
+docker compose up -d          # starts all 11 services
 
 # Test the AI assistant
 curl -X POST http://localhost:8003/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What should I do when SecureShip goes down?"}'
 
-# Open Grafana (auto-loaded dashboards)
-# http://localhost:3000  →  admin / observeops123
+# Grafana: http://localhost:3000  →  admin / observeops123
 
-# Run tests
 pytest apps/secureship/tests/ -v
 pytest apps/ragservice/tests/ -v
-
-# Evaluate RAG quality
 python scripts/eval_rag.py
 
 # Simulate incidents
-bash scripts/incident.sh kill       # stops SecureShip → triggers ServiceDown alert
-bash scripts/incident.sh errors     # 50% error rate  → triggers HighErrorRate alert
-bash scripts/incident.sh disk       # fills disk       → triggers DiskSpaceCritical alert
-bash scripts/incident.sh recover    # cleanup all
+bash scripts/incident.sh kill      # stop SecureShip → ServiceDown alert
+bash scripts/incident.sh errors    # 50% error rate  → HighErrorRate alert
+bash scripts/incident.sh disk      # fill disk        → DiskSpaceCritical alert
+bash scripts/incident.sh recover   # cleanup
 ```
 
 ---
@@ -245,7 +292,7 @@ bash scripts/incident.sh recover    # cleanup all
 
 ### First time
 ```bash
-# 1. Create Terraform backend (one-time)
+# 1. Terraform state backend (one-time)
 aws s3 mb s3://observeops-terraform-state-$(aws sts get-caller-identity --query Account --output text)
 aws dynamodb create-table \
   --table-name observeops-terraform-locks \
@@ -259,37 +306,38 @@ aws ssm put-parameter \
   --value "gsk_your_key" \
   --type SecureString
 
-# 3. Provision infrastructure
+# 3. Provision
 cd terraform && terraform init && terraform apply
-
-# Outputs: ALB DNS name, ECR URLs, server IPs
 ```
 
 ### Subsequent deploys
-Push to `main` → CI/CD handles it automatically (after approval).
+Push to `main` → CI/CD pipeline handles it automatically (after manual approval).
 
 ### Rollback
 ```bash
 bash scripts/deploy.sh --rollback
 ```
 
-### Stop billing (when not interviewing)
+### Cost control
 ```bash
-terraform destroy    # destroys EC2, ALB, NAT Gateway — stops most charges
+bash scripts/infra-down.sh   # destroys EC2, ALB, NAT Gateway — near-zero idle cost
+bash scripts/infra-up.sh     # rebuilds from scratch, triggers deploy
 ```
 
 ---
 
 ## Architecture Decisions
 
-**Why EC2 over EKS?** EKS control plane = ₹6,000/month minimum. EC2 + Docker Compose demonstrates the same operational concepts (health checks, rolling deploys, service discovery via container names) at ₹600/month.
+**Why EC2 over EKS for current deployment?** EKS control plane costs ₹6,000+/month. EC2 + Docker Compose demonstrates identical operational concepts (health checks, rolling deploys, service discovery) at ₹600/month. The `kubernetes/` directory has production-ready EKS manifests for when scale justifies the cost.
 
-**Why FAISS over Pinecone?** FAISS is free, runs in-process, no network dependency. Pinecone is a managed service — better at scale but adds cost and a dependency. For a knowledge base of 50-200 documents, FAISS is the right tradeoff.
+**Why FAISS over Pinecone?** FAISS is free, runs in-process, no network dependency. For 50–200 documents, FAISS is the right tradeoff. The service is provider-agnostic — switching is a config change.
 
-**Why Groq over OpenAI?** Groq hosts open-source Llama 3 on custom silicon. Free tier, ~200 tok/s, no data retention. The RAGService is provider-agnostic — swapping to OpenAI is a one-line change.
+**Why Groq over OpenAI?** Groq runs open-source Llama 3 on custom silicon. Free tier, ~200 tok/s, no data retention. Provider-agnostic interface — swapping to OpenAI is a one-line change.
 
-**Why separate observability server?** If Prometheus runs on the same host as the app, a CPU spike on the app degrades your monitoring at the exact moment you need it most. Monitoring must be independent to be trustworthy.
+**Why separate observability server?** A CPU spike on the app degrades monitoring exactly when you need it most. Monitoring must be independent of what it monitors.
 
-**Why LangGraph over a simple LangChain chain?** LangGraph models the pipeline as a state machine with conditional edges. The relevance-grading node routes to a "no context" fallback instead of generating hallucinated answers. This is the correct production pattern — observable, debuggable, and safe.
+**Why LangGraph over a simple chain?** LangGraph models the pipeline as a state machine with conditional edges. The relevance-grading node routes to a "no context" fallback instead of hallucinating. Observable, debuggable, correct.
 
-**Why IMDSv2?** SSRF vulnerabilities allow attackers to make requests to the EC2 metadata endpoint (169.254.169.254) and steal IAM credentials. IMDSv2 requires a session token that can't be forged via SSRF.
+**Why IMDSv2?** SSRF vulnerabilities can reach the EC2 metadata endpoint (169.254.169.254) and steal IAM credentials. IMDSv2 requires a signed session token that can't be forged via SSRF.
+
+**Why runtime DNS resolution in nginx?** nginx resolves `upstream` blocks at startup — if a container isn't up yet, nginx crashes. Docker's embedded DNS (`127.0.0.11`) resolves names at request time, so startup order doesn't matter.
