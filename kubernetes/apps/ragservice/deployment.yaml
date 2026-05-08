@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ragservice
+  namespace: observeops
+  labels:
+    app: ragservice
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ragservice
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      # Allow brief unavailability during rollout — RAGService is slow to start
+      # due to PyTorch model loading (~30s). Zero downtime would require 2x memory.
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: ragservice
+    spec:
+      containers:
+        - name: ragservice
+          image: 198239799078.dkr.ecr.ap-south-1.amazonaws.com/observeops/ragservice:latest
+          ports:
+            - containerPort: 8003
+
+          # RAGService loads a PyTorch model at startup — needs significantly
+          # more memory than the other services.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            # PyTorch model loading takes ~30s on first start
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            initialDelaySeconds: 60
+            periodSeconds: 30
+
+          env:
+            - name: APP_ENV
+              value: "production"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ragservice
+  namespace: observeops
+spec:
+  type: ClusterIP
+  selector:
+    app: ragservice
+  ports:
+    - port: 8003
+      targetPort: 8003

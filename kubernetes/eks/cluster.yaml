@@ -1,0 +1,59 @@
+# EKS Cluster configuration using eksctl
+# Run: eksctl create cluster -f kubernetes/eks/cluster.yaml
+#
+# Cost estimate: ~₹6000-8000/month (t3.medium nodes)
+# Use infra-up.sh / infra-down.sh to control costs.
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: observeops
+  region: ap-south-1
+  version: "1.29"
+
+# Managed node groups — AWS handles node patching and replacement
+managedNodeGroups:
+  - name: app-nodes
+    instanceType: t3.medium
+    minSize: 2
+    maxSize: 6
+    desiredCapacity: 2
+    # Spot instances cut cost by ~70% vs on-demand for non-critical workloads
+    spot: true
+    labels:
+      role: app
+    tags:
+      Project: observeops
+      ManagedBy: eksctl
+
+  # Separate node group for RAGService — needs more memory for PyTorch
+  - name: ai-nodes
+    instanceType: t3.large
+    minSize: 1
+    maxSize: 3
+    desiredCapacity: 1
+    spot: true
+    labels:
+      role: ai
+    taints:
+      # Only RAGService pods (with matching toleration) schedule here
+      - key: workload
+        value: ai
+        effect: NoSchedule
+
+# Enable IAM OIDC so pods can assume AWS IAM roles (same pattern as CI/CD)
+iam:
+  withOIDC: true
+  serviceAccounts:
+    - metadata:
+        name: observeops-sa
+        namespace: observeops
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+addons:
+  # AWS Load Balancer Controller — provisions ALB from Ingress resources
+  - name: aws-load-balancer-controller
+  # EBS CSI driver — provisions EBS volumes for PersistentVolumeClaims
+  - name: aws-ebs-csi-driver

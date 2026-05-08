@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: statusservice
+  namespace: observeops
+  labels:
+    app: statusservice
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: statusservice
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: statusservice
+    spec:
+      containers:
+        - name: statusservice
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/statusservice:latest
+          ports:
+            - containerPort: 8002
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: statusservice
+  namespace: observeops
+spec:
+  type: ClusterIP
+  selector:
+    app: statusservice
+  ports:
+    - port: 8002
+      targetPort: 8002

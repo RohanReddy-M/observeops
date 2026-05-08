@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secureship
+  namespace: observeops
+  labels:
+    app: secureship
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: secureship
+  # RollingUpdate ensures zero downtime — new pods come up before old ones go down
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Allow 1 extra pod during rollout
+      maxUnavailable: 0  # Never have fewer than desired replicas
+  template:
+    metadata:
+      labels:
+        app: secureship
+    spec:
+      containers:
+        - name: secureship
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/secureship:latest
+          ports:
+            - containerPort: 8001
+
+          # Resource limits prevent one pod starving others on the node.
+          # requests = guaranteed allocation, limits = hard cap.
+          resources:
+            requests:
+              cpu: "100m"       # 0.1 CPU core
+              memory: "128Mi"
+            limits:
+              cpu: "500m"       # 0.5 CPU core
+              memory: "512Mi"
+
+          # readinessProbe: pod only receives traffic when this passes.
+          # Prevents sending requests to a pod that's still starting up.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          # livenessProbe: pod is restarted if this fails.
+          # Catches deadlocks or hung processes that readiness alone won't catch.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+
+          env:
+            - name: APP_ENV
+              value: "production"
+            - name: PORT
+              value: "8001"
