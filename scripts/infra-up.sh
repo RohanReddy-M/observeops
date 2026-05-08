@@ -1,27 +1,11 @@
 #!/usr/bin/env bash
 # Bring ObserveOps live — run this before an interview or job application.
-# Takes about 10-12 minutes end to end.
+# Takes about 8-10 minutes end to end.
 set -e
 
 cd "$(dirname "$0")/../terraform"
 
-echo "==> Phase 1: Create Route53 hosted zone first..."
-# Create the zone BEFORE the full apply so we can update NS records
-# before ACM tries to validate (ACM validation needs correct NS to work).
-terraform apply -target=module.alb.aws_route53_zone.main -auto-approve
-
-echo ""
-echo "==> Syncing nameservers to domain registrar..."
-NAMESERVERS=$(terraform output -json route53_name_servers | jq -r '.[] | "Name=\(.)"' | tr '\n' ' ')
-aws route53domains update-domain-nameservers \
-  --region us-east-1 \
-  --domain-name secureship.click \
-  --nameservers $NAMESERVERS
-echo "==> Nameservers updated. Waiting 30s for propagation..."
-sleep 30
-
-echo ""
-echo "==> Phase 2: Apply all remaining infrastructure..."
+echo "==> Creating infrastructure..."
 terraform apply -auto-approve
 
 echo ""
