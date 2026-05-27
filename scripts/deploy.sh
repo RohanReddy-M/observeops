@@ -140,6 +140,21 @@ docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps statusservice
 log_info "Deploying RAGService..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps ragservice
 
+log_info "Injecting Lambda Function URL into AlertManager config..."
+LAMBDA_URL=$(aws ssm get-parameter \
+    --name "/observeops/lambda-function-url" \
+    --region "$AWS_REGION" \
+    --query "Parameter.Value" \
+    --output text 2>/dev/null || echo "")
+
+if [ -n "$LAMBDA_URL" ]; then
+    sed -i "s|__LAMBDA_FUNCTION_URL__|${LAMBDA_URL}|g" \
+        "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
+    log_info "Lambda URL injected ✓"
+else
+    log_warning "Lambda Function URL not found in SSM — alertmanager will use placeholder URL"
+fi
+
 log_info "Starting monitoring stack..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d prometheus grafana loki promtail alertmanager node-exporter
 

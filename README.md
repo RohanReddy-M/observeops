@@ -1,6 +1,6 @@
 # ObserveOps
 
-Three containerized services running on AWS behind an ALB, with a full observability stack and an AI assistant for incident response. Infrastructure is code, deployments are automated, and the monitoring runs on a separate host from the apps it watches.
+Three containerized services running on AWS behind an ALB, with a full observability stack, a DynamoDB-backed data layer, and an event-driven AI assistant for incident response. Infrastructure is code, deployments are automated, and monitoring runs on a separate host from the apps it watches.
 
 **Live:** https://secureship.click
 
@@ -26,18 +26,27 @@ ALB  ─── HTTPS :443 (ACM cert)  /  HTTP :80 → redirect
     │
     ▼ private subnet (no public IPs)
     ├── EC2: app server
-    │       ├── secureship      FastAPI
+    │       ├── secureship      FastAPI + DynamoDB
     │       ├── statusservice   Flask
-    │       ├── ragservice      FastAPI + LangGraph
-    │       ├── nginx           reverse proxy
+    │       ├── ragservice      FastAPI + LangGraph + FAISS
+    │       ├── nginx           reverse proxy + rate limiting
     │       └── promtail        ships logs to Loki
     │
     └── EC2: observability server
             ├── prometheus
             ├── grafana
             ├── loki
-            ├── alertmanager
+            ├── alertmanager ──→ Lambda (Function URL, no API Gateway)
             └── node-exporter
+
+Event-driven incident response:
+    AlertManager fires → Lambda Function URL
+        └── Lambda queries RAGService (LangGraph + FAISS + Groq)
+              └── publishes diagnosis to SNS topic
+                    └── SNS → email / Slack subscribers
+
+Data layer:
+    SecureShip ←→ DynamoDB (PAY_PER_REQUEST, point-in-time recovery)
 ```
 
 Observability runs on a separate host so a CPU spike on the app doesn't degrade monitoring at the exact moment you need it.
@@ -46,7 +55,7 @@ Observability runs on a separate host so a CPU spike on the app doesn't degrade 
 
 ## Services
 
-**SecureShip** (`apps/secureship/`) — FastAPI shipment API, exposes Prometheus metrics on `/metrics`.
+**SecureShip** (`apps/secureship/`) — FastAPI shipment API backed by DynamoDB. Falls back to in-memory data for local development (no DynamoDB needed). Exposes Prometheus metrics on `/metrics`. Health endpoint reports which storage backend is active.
 
 **StatusService** (`apps/statusservice/`) — Flask service with endpoints to simulate load and failures, useful for triggering real alerts.
 
@@ -65,6 +74,8 @@ curl -X POST http://localhost:8003/query \
 
 Stack: LangChain · LangGraph · FAISS · sentence-transformers · Groq (llama-3.1-8b-instant)
 
+**Lambda Incident Analyzer** (`apps/lambda/incident_analyzer/`) — serverless function that receives AlertManager webhooks, queries RAGService for diagnosis, and publishes findings to SNS. Also runs on a 5-minute EventBridge schedule for proactive health checks. Uses a Lambda Function URL (no API Gateway needed) so AlertManager posts to it directly.
+
 ---
 
 ## Infrastructure (`terraform/`)
@@ -74,7 +85,9 @@ modules/
 ├── vpc/       VPC, subnets, IGW, NAT Gateway, route tables
 ├── security/  security groups
 ├── compute/   EC2 instances, IAM role, SSM access
-└── alb/       ALB, ACM cert + DNS validation, Route53 records
+├── alb/       ALB, ACM cert + DNS validation, Route53 records
+├── dynamodb/  ships table (PAY_PER_REQUEST), SSM param with table name
+└── lambda/    incident analyzer, Function URL, EventBridge rule, SNS topic
 ```
 
 - EC2 in private subnets, no public IPs
@@ -82,6 +95,7 @@ modules/
 - Secrets in SSM Parameter Store, never in code or user data
 - IAM roles scoped to minimum permissions
 - CI/CD uses OIDC — no static AWS credentials anywhere
+- DynamoDB: PAY_PER_REQUEST (zero cost when idle), encrypted at rest, point-in-time recovery enabled
 
 ---
 
@@ -110,7 +124,7 @@ Build and deploy are skipped automatically when infra is down (no `EC2_INSTANCE_
 
 **Loki + Promtail** — structured JSON logs from all containers, queryable with LogQL.
 
-**AlertManager** — 12 alert rules across services, disk, latency, and LLM quality.
+**AlertManager** — 12 alert rules across services, disk, latency, and LLM quality. Firing alerts are forwarded to the Lambda incident analyzer via Function URL.
 
 ---
 
@@ -129,6 +143,8 @@ Monitoring: Prometheus, Grafana, Loki (all PVC-backed)
 **GitOps flow:** CI builds an image and commits the new tag into `kubernetes/apps/`. ArgoCD detects the diff and syncs the cluster — CI never touches the cluster directly. If someone manually deletes a deployment, ArgoCD reconciles it back within seconds (`selfHeal: true`).
 
 **App of Apps pattern:** one root ArgoCD Application watches `kubernetes/argocd/apps/` and manages all child applications. Adding a new service is one YAML file.
+
+**NetworkPolicies** (`kubernetes/network-policies/`) — default-deny-all on both ingress and egress. Explicit allow rules for: ingress controller → app pods, Prometheus scraping, intra-namespace communication, and egress to AWS APIs (port 443) and DNS (port 53).
 
 All pods run as non-root with `allowPrivilegeEscalation: false` and all Linux capabilities dropped.
 
@@ -166,6 +182,8 @@ pytest apps/ragservice/tests/ -v
 python scripts/eval_rag.py         # RAG quality score
 ```
 
+SecureShip uses in-memory fallback when `DYNAMODB_TABLE` is not set — no AWS account needed for local development.
+
 ---
 
 ## AWS deployment
@@ -177,8 +195,10 @@ cd terraform && terraform init && terraform apply
 # subsequent: push to main → CI/CD handles it
 
 # cost control
-bash scripts/infra-down.sh   # destroys EC2/ALB/NAT, keeps Route53 (~₹42/month idle)
+bash scripts/infra-down.sh   # destroys EC2/ALB/NAT/Lambda, keeps Route53 (~₹42/month idle)
 bash scripts/infra-up.sh     # rebuilds, triggers deploy
 ```
 
 Route53 zone is kept on destroy to avoid NS record changes — deleting and recreating the zone changes the nameservers, which breaks DNS globally for days until caches expire.
+
+DynamoDB uses PAY_PER_REQUEST billing — zero cost when infra is down and no requests are being made.

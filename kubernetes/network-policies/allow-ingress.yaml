@@ -1,0 +1,64 @@
+---
+# Allow the nginx/ingress controller to reach application pods.
+# In EKS the NGINX ingress controller runs in the ingress-nginx namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-secureship
+  namespace: observeops
+spec:
+  podSelector:
+    matchLabels:
+      app: secureship
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8001
+          protocol: TCP
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-statusservice
+  namespace: observeops
+spec:
+  podSelector:
+    matchLabels:
+      app: statusservice
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8002
+          protocol: TCP
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-ragservice
+  namespace: observeops
+spec:
+  podSelector:
+    matchLabels:
+      app: ragservice
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8003
+          protocol: TCP

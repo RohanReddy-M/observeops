@@ -178,6 +178,21 @@ module "alb" {
   common_tags       = local.common_tags
 }
 
+# ─── Lambda Module ───────────────────────────────────────────────────────────
+module "lambda" {
+  source       = "./modules/lambda"
+  project_name = var.project_name
+  domain_name  = "secureship.click"
+  common_tags  = local.common_tags
+}
+
+# ─── DynamoDB Module ──────────────────────────────────────────────────────────
+module "dynamodb" {
+  source       = "./modules/dynamodb"
+  project_name = var.project_name
+  common_tags  = local.common_tags
+}
+
 # ─── ECR Lifecycle Policy ────────────────────────────────────────────────────
 resource "aws_ecr_lifecycle_policy" "secureship" {
   repository = aws_ecr_repository.secureship.name
