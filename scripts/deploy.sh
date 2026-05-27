@@ -142,7 +142,7 @@ docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps ragservice
 
 log_info "Injecting Lambda Function URL into AlertManager config..."
 LAMBDA_URL=$(aws ssm get-parameter \
-    --name "/observeops/lambda-function-url" \
+    --name "/observeops/production/lambda_incident_url" \
     --region "$AWS_REGION" \
     --query "Parameter.Value" \
     --output text 2>/dev/null || echo "")
