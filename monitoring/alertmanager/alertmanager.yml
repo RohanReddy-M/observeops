@@ -37,11 +37,11 @@ route:
 
   # ─── Sub-routes ─────────────────────────────────────────────────────────────
   routes:
-    # All firing alerts go through the LLM Autopilot first for diagnosis
+    # All firing alerts go through the Lambda incident analyzer first for diagnosis
     - match:
         alertstate: firing
-      receiver: 'llm-autopilot'
-      continue: true          # After autopilot, keep matching other routes below
+      receiver: 'lambda-incident-analyzer'
+      continue: true          # After Lambda, keep matching other routes below
 
     # Critical alerts also go to Slack critical channel
     - match:
@@ -62,11 +62,12 @@ receivers:
   # Used as the default when Slack is not configured (local dev / CI).
   - name: 'null'
 
-  # LLM Autopilot: POST to the autopilot webhook for every firing alert.
-  # The autopilot fetches Loki logs, diagnoses with Groq, and posts to Slack.
-  - name: 'llm-autopilot'
+  # Lambda Incident Analyzer: POST to the Lambda Function URL for every firing alert.
+  # Lambda calls RAGService, publishes SNS summary, returns AI diagnosis.
+  # deploy.sh injects the real URL from SSM (/observeops/lambda-function-url).
+  - name: 'lambda-incident-analyzer'
     webhook_configs:
-      - url: 'http://autopilot:8004/webhook'
+      - url: '__LAMBDA_FUNCTION_URL__'
         send_resolved: false    # Only diagnose firing alerts, not resolved ones
 
   - name: 'slack-critical'

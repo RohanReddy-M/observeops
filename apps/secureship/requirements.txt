@@ -13,3 +13,6 @@ httpx==0.25.2
 
 # For parsing request bodies
 python-multipart==0.0.6
+
+# AWS SDK - DynamoDB integration (ships table)
+boto3==1.34.0
