@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: observeops
+  source:
+    repoURL: https://github.com/RohanReddy-M/observeops
+    targetRevision: HEAD
+    path: kubernetes/monitoring
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observeops
+  syncPolicy:
+    # Manual sync for monitoring — don't auto-restart Prometheus/Grafana
+    syncOptions:
+      - CreateNamespace=true

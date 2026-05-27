@@ -94,6 +94,7 @@ push to any branch
 push to main/develop
   ├── security-scan: Trivy (CVEs) · Bandit (SAST) · TruffleHog (secrets in git history)
   ├── build-push: builds all three images, pushes to ECR
+  ├── update-k8s-manifests: commits new image tags into kubernetes/apps/ — ArgoCD picks this up
   └── deploy: SSM Run Command → rolling deploy → smoke test 7 endpoints → auto-rollback on failure
 ```
 
@@ -113,9 +114,9 @@ Build and deploy are skipped automatically when infra is down (no `EC2_INSTANCE_
 
 ---
 
-## Kubernetes (`kubernetes/`)
+## Kubernetes + GitOps (`kubernetes/`)
 
-EKS-ready manifests. Also runs locally with `kind`.
+EKS-ready manifests managed by ArgoCD. Also runs locally with `kind`.
 
 ```
 Ingress → secureship (2–10 pods, HPA on CPU+memory)
@@ -125,14 +126,28 @@ Ingress → secureship (2–10 pods, HPA on CPU+memory)
 Monitoring: Prometheus, Grafana, Loki (all PVC-backed)
 ```
 
-RAGService runs on a separate node group (`t3.large`, spot) with a `NoSchedule` taint — PyTorch needs the memory and you don't want app pods competing for it.
+**GitOps flow:** CI builds an image and commits the new tag into `kubernetes/apps/`. ArgoCD detects the diff and syncs the cluster — CI never touches the cluster directly. If someone manually deletes a deployment, ArgoCD reconciles it back within seconds (`selfHeal: true`).
+
+**App of Apps pattern:** one root ArgoCD Application watches `kubernetes/argocd/apps/` and manages all child applications. Adding a new service is one YAML file.
+
+All pods run as non-root with `allowPrivilegeEscalation: false` and all Linux capabilities dropped.
+
+RAGService runs on a dedicated node group (`t3.large`, spot) with a `NoSchedule` taint — PyTorch needs 2 Gi+ and you don't want app pods evicted to make room for it.
 
 ```bash
+# Local setup
 kind create cluster --name observeops
 kubectl apply -f kubernetes/namespace.yaml
-kubectl apply -f kubernetes/apps/
-kubectl apply -f kubernetes/monitoring/
-kubectl apply -f kubernetes/ingress/ingress.yaml
+
+# Install ArgoCD
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Bootstrap — one command deploys everything via App of Apps
+kubectl apply -f kubernetes/argocd/app-of-apps.yaml
+
+# Watch ArgoCD sync all services
+kubectl get applications -n argocd
 kubectl get hpa -n observeops
 ```
 

@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ragservice
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: observeops
+  source:
+    repoURL: https://github.com/RohanReddy-M/observeops
+    targetRevision: HEAD
+    path: kubernetes/apps/ragservice
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observeops
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
