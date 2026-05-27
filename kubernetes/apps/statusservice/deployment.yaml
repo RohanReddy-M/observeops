@@ -20,11 +20,20 @@ spec:
       labels:
         app: statusservice
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: statusservice
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/statusservice:latest
+          image: ECR_REGISTRY/observeops/statusservice:IMAGE_TAG
           ports:
             - containerPort: 8002
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "50m"

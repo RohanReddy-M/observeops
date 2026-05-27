@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: observeops
+  namespace: argocd
+spec:
+  description: ObserveOps platform
+  sourceRepos:
+    - https://github.com/RohanReddy-M/observeops
+  destinations:
+    - namespace: observeops
+      server: https://kubernetes.default.svc
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace

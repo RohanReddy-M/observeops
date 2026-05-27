@@ -10,44 +10,43 @@ spec:
   selector:
     matchLabels:
       app: secureship
-  # RollingUpdate ensures zero downtime — new pods come up before old ones go down
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1        # Allow 1 extra pod during rollout
-      maxUnavailable: 0  # Never have fewer than desired replicas
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         app: secureship
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: secureship
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/secureship:latest
+          image: ECR_REGISTRY/observeops/secureship:IMAGE_TAG
           ports:
             - containerPort: 8001
-
-          # Resource limits prevent one pod starving others on the node.
-          # requests = guaranteed allocation, limits = hard cap.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
-              cpu: "100m"       # 0.1 CPU core
+              cpu: "100m"
               memory: "128Mi"
             limits:
-              cpu: "500m"       # 0.5 CPU core
+              cpu: "500m"
               memory: "512Mi"
-
-          # readinessProbe: pod only receives traffic when this passes.
-          # Prevents sending requests to a pod that's still starting up.
           readinessProbe:
             httpGet:
               path: /health
               port: 8001
             initialDelaySeconds: 5
             periodSeconds: 10
-
-          # livenessProbe: pod is restarted if this fails.
-          # Catches deadlocks or hung processes that readiness alone won't catch.
           livenessProbe:
             httpGet:
               path: /health
@@ -55,7 +54,6 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
             failureThreshold: 3
-
           env:
             - name: APP_ENV
               value: "production"

@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secureship
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: observeops
+  source:
+    repoURL: https://github.com/RohanReddy-M/observeops
+    targetRevision: HEAD
+    path: kubernetes/apps/secureship
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observeops
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
