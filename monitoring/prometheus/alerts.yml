@@ -25,19 +25,19 @@ groups:
         annotations:
           summary: "Service {{ $labels.job }} is down"
           description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable for more than 1 minute. Check if the container is running: docker ps | grep {{ $labels.job }}"
-          runbook_url: "https://github.com/youruser/observeops/blob/main/docs/runbooks/service-down.md"
+          runbook_url: "https://github.com/RohanReddy-M/observeops/blob/main/docs/runbooks/service-down.md"
 
       - alert: ContainerRestartingFrequently
-        # rate() calculates the per-second rate of change over 10 minutes
-        # If restarts are happening more than 0.05/sec = 3 per minute, alert fires
-        # This catches CrashLoopBackOff-style behavior
-        expr: rate(container_restarts_total[10m]) > 0.05
-        for: 5m
+        # kube_pod_container_status_restarts_total comes from kube-state-metrics (K8s)
+        # increase() over 15m counts restarts in that window
+        # Catches CrashLoopBackOff before Kubernetes gives up
+        expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
+        for: 0m
         labels:
           severity: critical
         annotations:
-          summary: "Container {{ $labels.container }} is restarting frequently"
-          description: "Container has restarted more than 3 times in 10 minutes. Check logs: docker logs {{ $labels.container }}"
+          summary: "Pod {{ $labels.pod }} container {{ $labels.container }} restarting"
+          description: "Container restarted {{ $value }} times in 15 minutes. Check logs: kubectl logs {{ $labels.pod }} -n {{ $labels.namespace }} --previous"
 
   # ─── Error Rate Alerts ─────────────────────────────────────────────────────
   - name: error_rates
@@ -74,6 +74,22 @@ groups:
         annotations:
           summary: "CRITICAL error rate on {{ $labels.job }}"
           description: "Error rate is {{ $value | humanize }}% - service is degraded significantly."
+
+      - alert: StatusServiceHighErrorRate
+        # StatusService emits status_requests_total with label 'status' (not status_code).
+        # Separate alert covers the /fail endpoint simulated errors.
+        expr: |
+          (
+            rate(status_requests_total{status="500"}[5m])
+            /
+            rate(status_requests_total[5m])
+          ) * 100 > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "StatusService high error rate ({{ $value | humanize }}%)"
+          description: "StatusService /fail endpoint is returning errors above threshold. Check FAILURE_RATE env var."
 
   # ─── Latency Alerts ────────────────────────────────────────────────────────
   - name: latency
@@ -225,14 +241,14 @@ groups:
   - name: observability
     rules:
 
-      - alert: NoLogsReceived
-        # If Loki hasn't received any logs from a container in 5 minutes,
-        # either the container died or the log shipping broke
-        # This catches the "silent failure" problem
-        expr: absent(rate({container=~".+"}[5m]))
-        for: 5m
+      - alert: LokiDown
+        # Prometheus scrapes Loki's /metrics endpoint.
+        # up == 0 means Loki is unreachable — logs are not being stored.
+        # When Loki is down, all LogQL queries in Grafana fail silently.
+        expr: up{job="loki"} == 0
+        for: 2m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "No logs received from containers"
-          description: "Loki has received no container logs for 5 minutes. Check Promtail: docker logs promtail"
+          summary: "Loki log storage is down"
+          description: "Loki has been unreachable for 2 minutes. Logs are not being stored. Check: docker logs loki"

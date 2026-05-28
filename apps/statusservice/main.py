@@ -37,6 +37,7 @@ logger.setLevel(logging.INFO)
 # ─── Flask App ────────────────────────────────────────────────────────────────
 # Flask is simpler than FastAPI - good for small services
 app = Flask(__name__)
+app.start_time = time.time()  # set at import time so gunicorn workers see it
 
 # ─── Prometheus Metrics ───────────────────────────────────────────────────────
 REQUEST_COUNT = Counter('status_requests_total', 'Total requests', ['endpoint', 'status'])
@@ -164,5 +165,4 @@ def root():
     })
 
 if __name__ == '__main__':
-    app.start_time = time.time()
     app.run(host='0.0.0.0', port=8002)

@@ -28,12 +28,12 @@ def test_list_ships():
     assert len(response.json()["ships"]) > 0
 
 def test_get_ship_found():
-    response = client.get("/api/ships/1")
+    response = client.get("/api/ships/ship-001")
     assert response.status_code == 200
-    assert response.json()["id"] == 1
+    assert response.json()["ship_id"] == "ship-001"
 
 def test_get_ship_not_found():
-    response = client.get("/api/ships/999")
+    response = client.get("/api/ships/does-not-exist")
     assert response.status_code == 404
 
 def test_metrics_endpoint():

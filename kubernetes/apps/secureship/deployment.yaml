@@ -59,3 +59,11 @@ spec:
               value: "production"
             - name: PORT
               value: "8001"
+            - name: DYNAMODB_TABLE
+              value: "observeops-ships"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -294,11 +294,13 @@ jobs:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.build-push.outputs.image-tag }}
         run: |
-          sed -i "s|ECR_REGISTRY/observeops/secureship:IMAGE_TAG|$REGISTRY/observeops/secureship:$TAG|g" \
+          # ECR_REGISTRY secret = ACCOUNT.dkr.ecr.region.amazonaws.com/observeops
+          # so $REGISTRY/secureship = .../observeops/secureship — correct path, no double /observeops
+          sed -i "s|ECR_REGISTRY/observeops/secureship:IMAGE_TAG|$REGISTRY/secureship:$TAG|g" \
             kubernetes/apps/secureship/deployment.yaml
-          sed -i "s|ECR_REGISTRY/observeops/statusservice:IMAGE_TAG|$REGISTRY/observeops/statusservice:$TAG|g" \
+          sed -i "s|ECR_REGISTRY/observeops/statusservice:IMAGE_TAG|$REGISTRY/statusservice:$TAG|g" \
             kubernetes/apps/statusservice/deployment.yaml
-          sed -i "s|ECR_REGISTRY/observeops/ragservice:IMAGE_TAG|$REGISTRY/observeops/ragservice:$TAG|g" \
+          sed -i "s|ECR_REGISTRY/observeops/ragservice:IMAGE_TAG|$REGISTRY/ragservice:$TAG|g" \
             kubernetes/apps/ragservice/deployment.yaml
 
       - name: Commit and push manifest updates
