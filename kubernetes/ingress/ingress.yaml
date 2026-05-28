@@ -4,20 +4,19 @@ metadata:
   name: observeops
   namespace: observeops
   annotations:
-    # On EKS: use AWS Load Balancer Controller instead of nginx ingress.
-    # It provisions an ALB natively, integrates with ACM certs, and is
-    # the standard approach for production EKS deployments.
-    kubernetes.io/ingress.class: "alb"
     alb.ingress.kubernetes.io/scheme: "internet-facing"
     alb.ingress.kubernetes.io/target-type: "ip"
-    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:198239799708:certificate/YOUR_CERT_ARN"
+    # Get the cert ARN after terraform apply:
+    #   terraform -chdir=terraform output -raw acm_certificate_arn
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:198239799708:certificate/REPLACE_WITH_TERRAFORM_OUTPUT"
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
     alb.ingress.kubernetes.io/healthcheck-path: "/health"
-
-    # For local development with kind, switch to nginx ingress controller:
-    # kubernetes.io/ingress.class: "nginx"
+    argocd.argoproj.io/sync-wave: "3"  # Last — only useful once all services are healthy
 spec:
+  # ingressClassName replaces the deprecated kubernetes.io/ingress.class annotation (removed in K8s 1.22+)
+  # Requires AWS Load Balancer Controller installed on the EKS cluster
+  ingressClassName: alb
   rules:
     - host: secureship.click
       http:

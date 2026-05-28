@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: observeops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"  # Must exist before Prometheus pod starts
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        environment: production
+        project: observeops
+
+    rule_files:
+      - /etc/prometheus/alerts.yml
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+                # K8s DNS format: <service>.<namespace>.svc.cluster.local
+                - alertmanager.observeops.svc.cluster.local:9093
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: [localhost:9090]
+
+      - job_name: secureship
+        static_configs:
+          - targets: [secureship.observeops.svc.cluster.local:8001]
+            labels:
+              service: secureship
+
+      - job_name: statusservice
+        static_configs:
+          - targets: [statusservice.observeops.svc.cluster.local:8002]
+            labels:
+              service: statusservice
+
+      - job_name: ragservice
+        static_configs:
+          - targets: [ragservice.observeops.svc.cluster.local:8003]
+            labels:
+              service: ragservice
+
+      - job_name: node-exporter
+        static_configs:
+          - targets: [node-exporter.observeops.svc.cluster.local:9100]
+
+      - job_name: grafana
+        static_configs:
+          - targets: [grafana.observeops.svc.cluster.local:3000]
+
+  alerts.yml: |
+    # Loaded from the shared alerts file at runtime.
+    # In production use a separate ConfigMap or Prometheus Operator PrometheusRule CRD.
+    # The full alert rules live in monitoring/prometheus/alerts.yml.
