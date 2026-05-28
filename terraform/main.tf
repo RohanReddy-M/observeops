@@ -194,9 +194,8 @@ module "dynamodb" {
 }
 
 # ─── ECR Lifecycle Policy ────────────────────────────────────────────────────
-resource "aws_ecr_lifecycle_policy" "secureship" {
-  repository = aws_ecr_repository.secureship.name
-  policy = jsonencode({
+locals {
+  ecr_lifecycle_policy = jsonencode({
     rules = [{
       rulePriority = 1
       description  = "Keep only last 10 images"
@@ -208,4 +207,19 @@ resource "aws_ecr_lifecycle_policy" "secureship" {
       action = { type = "expire" }
     }]
   })
+}
+
+resource "aws_ecr_lifecycle_policy" "secureship" {
+  repository = aws_ecr_repository.secureship.name
+  policy     = local.ecr_lifecycle_policy
+}
+
+resource "aws_ecr_lifecycle_policy" "statusservice" {
+  repository = aws_ecr_repository.statusservice.name
+  policy     = local.ecr_lifecycle_policy
+}
+
+resource "aws_ecr_lifecycle_policy" "ragservice" {
+  repository = aws_ecr_repository.ragservice.name
+  policy     = local.ecr_lifecycle_policy
 }

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+tests/
+.env
+.env.*
+*.egg-info/
+dist/
+.git/
+# FAISS index and model cache — rebuilt at container startup, not baked into image
+*.faiss
+*.pkl
+model_cache/

@@ -55,9 +55,16 @@ GROQ_API_KEY=$(aws ssm get-parameter \
   --query 'Parameter.Value' \
   --output text 2>/dev/null || echo "")
 
-# Write the .env file that docker-compose and the app will read
+DYNAMODB_TABLE=$(aws ssm get-parameter \
+  --name "/${project_name}/production/dynamodb_ships_table" \
+  --region ${aws_region} \
+  --query 'Parameter.Value' \
+  --output text 2>/dev/null || echo "${project_name}-ships")
+
+# Write the .env file that docker-compose reads at startup
 cat > /opt/observeops/.env <<EOF
 GROQ_API_KEY=$${GROQ_API_KEY}
+DYNAMODB_TABLE=$${DYNAMODB_TABLE}
 EOF
 
 chmod 600 /opt/observeops/.env     # Only owner can read (secrets protection)

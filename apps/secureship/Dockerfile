@@ -48,8 +48,7 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"
 
-# The command that runs when the container starts
-# --host 0.0.0.0: listen on all interfaces (required inside containers)
-# --port 8001: our app port
-# --workers 2: handle 2 requests simultaneously
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2"]
+# Single worker: uvicorn is async — one worker handles many concurrent requests.
+# Multiple workers with prometheus_client require multiprocess mode (PROMETHEUS_MULTIPROC_DIR),
+# otherwise each worker tracks its own metrics and /metrics returns partial data.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]

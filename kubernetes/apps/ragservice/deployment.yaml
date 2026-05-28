@@ -63,6 +63,14 @@ spec:
           env:
             - name: APP_ENV
               value: "production"
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: observeops-secrets
+                  key: GROQ_API_KEY
+            # Create the secret before deploying:
+            # kubectl create secret generic observeops-secrets \
+            #   --from-literal=GROQ_API_KEY=<your-key> -n observeops
 ---
 apiVersion: v1
 kind: Service

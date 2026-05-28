@@ -147,6 +147,11 @@ LAMBDA_URL=$(aws ssm get-parameter \
     --query "Parameter.Value" \
     --output text 2>/dev/null || echo "")
 
+# Always regenerate from the git-tracked template so the placeholder is present.
+# Using sed -i without first restoring from git would leave the old URL on the
+# second and subsequent deploys (the placeholder was already replaced).
+git -C "$APP_DIR" checkout HEAD -- monitoring/alertmanager/alertmanager.yml
+
 if [ -n "$LAMBDA_URL" ]; then
     sed -i "s|__LAMBDA_FUNCTION_URL__|${LAMBDA_URL}|g" \
         "$APP_DIR/monitoring/alertmanager/alertmanager.yml"

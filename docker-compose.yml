@@ -27,6 +27,7 @@ services:
     environment:
       - APP_VERSION=1.0.0
       - ENVIRONMENT=local
+      - DYNAMODB_TABLE=${DYNAMODB_TABLE:-}  # set in .env on EC2; empty = in-memory fallback locally
     # healthcheck tells Docker when the container is truly ready
     # This is different from the Dockerfile HEALTHCHECK - this one
     # affects docker-compose depends_on conditions
@@ -80,31 +81,6 @@ services:
       interval: 30s
       timeout: 15s
       retries: 3
-    networks:
-      - observeops
-    restart: unless-stopped
-
-  # ─── LLM Alert Autopilot ─────────────────────────────────────────────────────
-  # Receives AlertManager webhooks, fetches Loki logs, diagnoses with Groq LLM,
-  # posts root-cause analysis to Slack. Set SLACK_WEBHOOK_URL in .env for Slack.
-  autopilot:
-    build:
-      context: ../llm-alert-autopilot
-      dockerfile: Dockerfile
-    container_name: autopilot
-    ports:
-      - "8004:8004"
-    environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - LOKI_URL=http://loki:3100
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    depends_on:
-      - loki
     networks:
       - observeops
     restart: unless-stopped
