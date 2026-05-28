@@ -34,9 +34,12 @@ terraform {
   #     --attribute-definitions AttributeName=LockID,AttributeType=S \
   #     --key-schema AttributeName=LockID,KeyType=HASH \
   #     --billing-mode PAY_PER_REQUEST
+  # Partial backend config — key is injected at init time so each environment
+  # gets its own isolated state file:
+  #   terraform init -backend-config=key=production/terraform.tfstate
+  #   terraform init -backend-config=key=staging/terraform.tfstate
   backend "s3" {
     bucket         = "observeops-terraform-state-198239799708"
-    key            = "production/terraform.tfstate"
     region         = "ap-south-1"
     encrypt        = true
     dynamodb_table = "observeops-terraform-locks"
@@ -114,6 +117,8 @@ module "compute" {
   app_sg_id           = module.security.app_sg_id
   observability_sg_id = module.security.observability_sg_id
   public_key_path     = var.public_key_path
+  app_instance_type   = var.app_instance_type
+  obs_instance_type   = var.obs_instance_type
   common_tags         = local.common_tags
 
   # Deployment order: DynamoDB and Lambda must be provisioned first so their

@@ -1,0 +1,50 @@
+version: 2
+
+updates:
+  # GitHub Actions — keeps workflow action versions current (security patches)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "ci"]
+
+  # Python — SecureShip
+  - package-ecosystem: "pip"
+    directory: "/apps/secureship"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "python", "secureship"]
+
+  # Python — StatusService
+  - package-ecosystem: "pip"
+    directory: "/apps/statusservice"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "python", "statusservice"]
+
+  # Python — RAGService
+  - package-ecosystem: "pip"
+    directory: "/apps/ragservice"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "python", "ragservice"]
+
+  # Python — Lambda incident analyzer
+  - package-ecosystem: "pip"
+    directory: "/apps/lambda/incident_analyzer"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "python", "lambda"]
+
+  # Terraform providers
+  - package-ecosystem: "terraform"
+    directory: "/terraform"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "terraform"]

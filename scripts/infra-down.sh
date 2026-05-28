@@ -3,11 +3,17 @@
 # The Route53 hosted zone is intentionally kept alive (~₹42/month) to
 # prevent DNS cache poisoning when infra is rebuilt — destroying and
 # recreating the zone changes NS records which breaks DNS globally for days.
+#
+# ENV controls which environment to target (default: production)
+# Usage: ENV=staging bash scripts/infra-down.sh
 set -e
 
+ENV="${ENV:-production}"
 cd "$(dirname "$0")/../terraform"
 
-echo "==> This will destroy all compute infrastructure (EC2, ALB, NAT GW, VPC)."
+terraform init -input=false -backend-config="key=${ENV}/terraform.tfstate" -reconfigure > /dev/null
+
+echo "==> This will destroy all compute infrastructure (env: ${ENV}: EC2, ALB, NAT GW, VPC)."
 echo "    Route53 hosted zone is kept to avoid DNS propagation issues."
 read -p "    Type 'yes' to confirm: " CONFIRM
 if [ "$CONFIRM" != "yes" ]; then
@@ -25,10 +31,10 @@ for repo in observeops/secureship observeops/statusservice observeops/ragservice
 done
 
 echo ""
-echo "==> Destroying compute infrastructure..."
+echo "==> Destroying compute infrastructure (env: ${ENV})..."
 # Destroy everything except the Route53 hosted zone and ACM cert/records
 # (those live in module.alb but we target only the expensive parts)
-terraform destroy -auto-approve \
+terraform destroy -auto-approve -var-file="environments/${ENV}.tfvars" \
   -target=module.compute \
   -target=module.vpc \
   -target=module.security \
