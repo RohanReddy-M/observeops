@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: secureship
   namespace: observeops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"  # Service before Deployment so DNS resolves when pods start
 spec:
   # ClusterIP = internal only. The Ingress routes external traffic here.
   # Never expose application pods directly with LoadBalancer — use Ingress.

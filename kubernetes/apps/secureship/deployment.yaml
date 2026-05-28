@@ -5,6 +5,8 @@ metadata:
   namespace: observeops
   labels:
     app: secureship
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"  # After Service so DNS is ready when pods register
 spec:
   replicas: 2
   selector:
