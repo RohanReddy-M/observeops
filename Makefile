@@ -34,6 +34,7 @@ help:
 	@echo "  TESTING"
 	@echo "    make test               run all tests"
 	@echo "    make test-secureship    run SecureShip tests only"
+	@echo "    make test-statusservice run StatusService tests only"
 	@echo "    make test-ragservice    run RAGService tests only"
 	@echo "    make scan               run security scan (Trivy + Bandit)"
 	@echo ""
@@ -45,13 +46,18 @@ help:
 	@echo "    make rollback           roll back to previous version"
 	@echo ""
 	@echo "  INFRASTRUCTURE (requires AWS credentials + Terraform)"
-	@echo "    make plan               terraform plan (shows what will change)"
-	@echo "    make infra-up           provision all AWS infrastructure"
-	@echo "    make infra-down         destroy infrastructure, keep Route53"
+	@echo "    make plan               terraform plan for production (default)"
+	@echo "    make plan ENV=staging   terraform plan for staging"
+	@echo "    make infra-up           provision production infrastructure"
+	@echo "    make infra-up ENV=staging   provision staging infrastructure"
+	@echo "    make infra-down         destroy production infrastructure, keep Route53"
+	@echo "    make infra-down ENV=staging destroy staging infrastructure"
 	@echo ""
 	@echo "  CODE QUALITY"
 	@echo "    make lint               run flake8 on all Python code"
 	@echo "    make fmt                format Python (black) and Terraform (terraform fmt)"
+	@echo "    make pre-commit-install install git pre-commit hooks (run once after clone)"
+	@echo "    make pre-commit-run     run all hooks against all files"
 	@echo ""
 	@echo "  UTILITIES"
 	@echo "    make clean              remove containers, images, build cache"
@@ -107,7 +113,7 @@ status:
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
 
-test: test-secureship test-ragservice
+test: test-secureship test-statusservice test-ragservice
 	@echo "==> All tests passed."
 
 test-secureship:
@@ -115,6 +121,12 @@ test-secureship:
 	pip install -q -r apps/secureship/requirements.txt
 	pip install -q pytest httpx pytest-asyncio
 	pytest apps/secureship/tests/ -v
+
+test-statusservice:
+	@echo "==> Running StatusService tests..."
+	pip install -q -r apps/statusservice/requirements.txt
+	pip install -q pytest
+	pytest apps/statusservice/tests/ -v
 
 test-ragservice:
 	@echo "==> Running RAGService tests..."
@@ -155,6 +167,16 @@ fmt:
 	@echo "==> Formatting Terraform..."
 	terraform -chdir=terraform fmt -recursive
 
+pre-commit-install:
+	@echo "==> Installing pre-commit hooks..."
+	pip install -q pre-commit detect-secrets
+	pre-commit install
+	@echo "  Hooks installed. They will run automatically on every git commit."
+
+pre-commit-run:
+	@echo "==> Running all pre-commit hooks against all files..."
+	pre-commit run --all-files
+
 # ─── Deploy ───────────────────────────────────────────────────────────────────
 
 deploy:
@@ -167,17 +189,23 @@ rollback:
 
 # ─── Infrastructure ───────────────────────────────────────────────────────────
 
+# ENV controls which environment to target (default: production)
+# Usage: make plan ENV=staging  |  make infra-up ENV=staging
+ENV ?= production
+
 plan:
-	@echo "==> Running terraform plan..."
-	cd terraform && terraform init -input=false && terraform plan -var-file=terraform.tfvars
+	@echo "==> Running terraform plan ($(ENV))..."
+	cd terraform && terraform init -input=false \
+	  -backend-config=key=$(ENV)/terraform.tfstate && \
+	  terraform plan -var-file=environments/$(ENV).tfvars
 
 infra-up:
-	@echo "==> Provisioning infrastructure..."
-	bash scripts/infra-up.sh
+	@echo "==> Provisioning infrastructure ($(ENV))..."
+	ENV=$(ENV) bash scripts/infra-up.sh
 
 infra-down:
-	@echo "==> Destroying infrastructure (keeping Route53)..."
-	bash scripts/infra-down.sh
+	@echo "==> Destroying infrastructure ($(ENV), keeping Route53)..."
+	ENV=$(ENV) bash scripts/infra-down.sh
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
 

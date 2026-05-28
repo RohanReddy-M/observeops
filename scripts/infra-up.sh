@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Bring ObserveOps live — run this before an interview or job application.
 # Takes about 8-10 minutes end to end.
+#
+# ENV controls which environment to target (default: production)
+# Usage: ENV=staging bash scripts/infra-up.sh
 set -e
 
+ENV="${ENV:-production}"
 cd "$(dirname "$0")/../terraform"
 
-echo "==> Creating infrastructure..."
-terraform apply -auto-approve
+echo "==> Initialising Terraform (env: ${ENV})..."
+terraform init -input=false -backend-config="key=${ENV}/terraform.tfstate"
+
+echo "==> Creating infrastructure (env: ${ENV})..."
+terraform apply -auto-approve -var-file="environments/${ENV}.tfvars"
 
 echo ""
 echo "==> Updating GitHub secrets with new instance ID..."

@@ -2,10 +2,14 @@ import time
 import logging
 import json
 import os
+import uuid
 from datetime import datetime
+from typing import Optional
 
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi import FastAPI, Request, Response, HTTPException, Security, Depends
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel, Field
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 try:
@@ -14,6 +18,7 @@ try:
     DYNAMODB_AVAILABLE = True
 except ImportError:
     DYNAMODB_AVAILABLE = False
+
 
 class JSONFormatter(logging.Formatter):
     def format(self, record):
@@ -26,6 +31,7 @@ class JSONFormatter(logging.Formatter):
         if hasattr(record, 'extra'):
             log_obj.update(record.extra)
         return json.dumps(log_obj)
+
 
 handler = logging.StreamHandler()
 handler.setFormatter(JSONFormatter())
@@ -52,15 +58,36 @@ APP_INFO.labels(
 
 app = FastAPI(title="SecureShip API", version="1.0.0")
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
+# Set API_KEY env var to enable key-based auth. Empty = open mode (local dev).
+API_KEY = os.getenv("API_KEY", "")
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(api_key: Optional[str] = Security(_api_key_header)):
+    if not API_KEY:
+        return  # Auth not configured — allow all (local development)
+    if api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+# ── Pydantic models ───────────────────────────────────────────────────────────
+class ShipCreate(BaseModel):
+    ship_id: str = Field(..., min_length=1, max_length=64, pattern=r'^[a-zA-Z0-9-]+$')
+    name: str = Field(..., min_length=1, max_length=128)
+    status: str = Field(..., pattern=r'^(active|docked|transit)$')
+    cargo: str = Field(..., min_length=1, max_length=256)
+
+
 # ── DynamoDB setup ────────────────────────────────────────────────────────────
 DYNAMODB_TABLE = os.getenv("DYNAMODB_TABLE", "")
 
-# Fallback data for local development (no DynamoDB)
 _LOCAL_SHIPS = {
     "ship-001": {"ship_id": "ship-001", "name": "SS Mumbai", "status": "active", "cargo": "electronics"},
     "ship-002": {"ship_id": "ship-002", "name": "SS Delhi", "status": "docked", "cargo": "textiles"},
     "ship-003": {"ship_id": "ship-003", "name": "SS Chennai", "status": "transit", "cargo": "machinery"},
 }
+
 
 def get_dynamodb_table():
     if not DYNAMODB_AVAILABLE or not DYNAMODB_TABLE:
@@ -108,9 +135,12 @@ def db_put_ship(ship: dict) -> dict:
 # ── Middleware ────────────────────────────────────────────────────────────────
 @app.middleware("http")
 async def observability_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
+
+    response.headers["X-Request-ID"] = request_id
 
     REQUEST_COUNT.labels(
         method=request.method,
@@ -122,6 +152,7 @@ async def observability_middleware(request: Request, call_next):
         endpoint=request.url.path
     ).observe(duration)
     logger.info("request", extra={
+        "request_id": request_id,
         "method": request.method,
         "path": str(request.url.path),
         "status_code": response.status_code,
@@ -140,30 +171,49 @@ async def health_check():
         "storage": "dynamodb" if (DYNAMODB_AVAILABLE and DYNAMODB_TABLE) else "local"
     }
 
+
 @app.get("/metrics")
 async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-@app.get("/api/ships")
+
+# v1 API
+@app.get("/api/v1/ships", dependencies=[Depends(verify_api_key)])
 async def list_ships():
     ships = db_list_ships()
     return {"ships": ships, "total": len(ships), "timestamp": datetime.utcnow().isoformat()}
 
-@app.get("/api/ships/{ship_id}")
+
+@app.get("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
 async def get_ship(ship_id: str):
     ship = db_get_ship(ship_id)
     if not ship:
         raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")
     return ship
 
-@app.post("/api/ships")
-async def create_ship(request: Request):
-    body = await request.json()
-    if "ship_id" not in body:
-        raise HTTPException(status_code=400, detail="ship_id is required")
-    ship = db_put_ship(body)
-    logger.info("ship_created", extra={"ship_id": ship["ship_id"]})
-    return {"message": "Ship created", "ship": ship, "timestamp": datetime.utcnow().isoformat()}
+
+@app.post("/api/v1/ships", dependencies=[Depends(verify_api_key)])
+async def create_ship(ship: ShipCreate):
+    saved = db_put_ship(ship.model_dump())
+    logger.info("ship_created", extra={"ship_id": saved["ship_id"]})
+    return {"message": "Ship created", "ship": saved, "timestamp": datetime.utcnow().isoformat()}
+
+
+# Backward-compatible redirects — old /api/ships/* → /api/v1/ships/*
+@app.get("/api/ships", include_in_schema=False)
+async def redirect_list_ships():
+    return RedirectResponse(url="/api/v1/ships", status_code=301)
+
+
+@app.get("/api/ships/{ship_id}", include_in_schema=False)
+async def redirect_get_ship(ship_id: str):
+    return RedirectResponse(url=f"/api/v1/ships/{ship_id}", status_code=301)
+
+
+@app.post("/api/ships", include_in_schema=False)
+async def redirect_create_ship():
+    return RedirectResponse(url="/api/v1/ships", status_code=308)  # 308 preserves POST body
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -262,7 +312,7 @@ async def root():
 
     <div class="links" style="margin-bottom:40px">
       <a class="link primary" href="/docs">API Docs (Swagger)</a>
-      <a class="link" href="/api/ships">Ships API</a>
+      <a class="link" href="/api/v1/ships">Ships API</a>
       <a class="link" href="/grafana/">Grafana Dashboards</a>
       <a class="link" href="/prometheus/">Prometheus</a>
       <a class="link" href="https://github.com/RohanReddy-M/observeops" target="_blank">GitHub</a>

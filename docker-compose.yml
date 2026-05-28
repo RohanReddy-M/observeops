@@ -92,7 +92,7 @@ services:
   # /api/* → secureship:8001
   # /status/* → statusservice:8002
   nginx:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
     container_name: nginx
     ports:
       - "80:80"
@@ -112,7 +112,7 @@ services:
   # Prometheus scrapes /metrics from our services every 15 seconds
   # and stores the data in a time-series database on disk
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.1
     container_name: prometheus
     ports:
       - "9090:9090"
@@ -132,7 +132,7 @@ services:
   # ─── Grafana ─────────────────────────────────────────────────────────────────
   # Grafana connects to Prometheus and renders dashboards
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
     container_name: grafana
     ports:
       - "3000:3000"
@@ -157,7 +157,7 @@ services:
   # Loki stores logs. Promtail ships logs TO Loki. Grafana reads FROM Loki.
   # Think of it as: Promtail = log collector, Loki = log database, Grafana = log viewer
   loki:
-    image: grafana/loki:latest
+    image: grafana/loki:3.3.2
     container_name: loki
     ports:
       - "3100:3100"
@@ -172,7 +172,7 @@ services:
   # ─── Promtail ────────────────────────────────────────────────────────────────
   # Promtail watches Docker container logs and ships them to Loki
   promtail:
-    image: grafana/promtail:latest
+    image: grafana/promtail:3.3.2
     container_name: promtail
     volumes:
       - ./monitoring/loki/promtail-config.yml:/etc/promtail/config.yml:ro
@@ -190,7 +190,7 @@ services:
   # AlertManager receives alerts FROM Prometheus and routes them to Slack/email
   # Prometheus detects the problem, AlertManager decides who gets notified
   alertmanager:
-    image: prom/alertmanager:latest
+    image: prom/alertmanager:v0.27.0
     container_name: alertmanager
     ports:
       - "9093:9093"
@@ -206,7 +206,7 @@ services:
   # Exposes Linux system metrics (CPU, memory, disk, network) to Prometheus
   # Without this, Prometheus only knows about your app metrics, not the host
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.8.2
     container_name: node-exporter
     ports:
       - "9100:9100"

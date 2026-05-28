@@ -47,3 +47,15 @@ variable "public_key_path" {
   type        = string
   default     = "~/.ssh/id_rsa.pub"
 }
+
+variable "app_instance_type" {
+  description = "EC2 instance type for the application server"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "obs_instance_type" {
+  description = "EC2 instance type for the observability server (Prometheus/Grafana)"
+  type        = string
+  default     = "t3.small"
+}
