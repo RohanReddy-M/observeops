@@ -115,6 +115,11 @@ module "compute" {
   observability_sg_id = module.security.observability_sg_id
   public_key_path     = var.public_key_path
   common_tags         = local.common_tags
+
+  # Deployment order: DynamoDB and Lambda must be provisioned first so their
+  # SSM parameters exist when EC2 user_data runs on first boot.
+  # Without this, user_data reads empty SSM params and falls back to defaults.
+  depends_on = [module.dynamodb, module.lambda]
 }
 
 # ─── Locals ───────────────────────────────────────────────────────────────────

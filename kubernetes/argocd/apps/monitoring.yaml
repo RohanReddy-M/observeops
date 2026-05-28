@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: monitoring
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"  # Deploy monitoring first — PVCs bind, Prometheus ready
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

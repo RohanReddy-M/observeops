@@ -3,6 +3,8 @@ kind: HorizontalPodAutoscaler
 metadata:
   name: secureship
   namespace: observeops
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"  # After Deployment exists (HPA targets the Deployment)
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
