@@ -93,16 +93,6 @@ scrape_configs:
           service: 'ragservice'
           team: 'ai'
 
-  # ─── LLM Alert Autopilot ────────────────────────────────────────────────────
-  # Scrapes autopilot metrics: alerts_processed_total, diagnosis_latency_seconds,
-  # llm_errors_total, loki_errors_total
-  - job_name: 'autopilot'
-    static_configs:
-      - targets: ['autopilot:8004']
-        labels:
-          service: 'autopilot'
-          team: 'ai'
-
   # ─── Grafana ────────────────────────────────────────────────────────────────
   - job_name: 'grafana'
     static_configs:
