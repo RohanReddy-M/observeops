@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 try:
@@ -165,6 +165,113 @@ async def create_ship(request: Request):
     logger.info("ship_created", extra={"ship_id": ship["ship_id"]})
     return {"message": "Ship created", "ship": ship, "timestamp": datetime.utcnow().isoformat()}
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {"service": "SecureShip API", "status": "running", "docs": "/docs"}
+    version = os.getenv('APP_VERSION', '1.0.0')
+    environment = os.getenv('ENVIRONMENT', 'production')
+    storage = "dynamodb" if (DYNAMODB_AVAILABLE and DYNAMODB_TABLE) else "local"
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ObserveOps — SecureShip Platform</title>
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 48px 24px; }}
+    .container {{ max-width: 860px; margin: 0 auto; }}
+    h1 {{ font-size: 2rem; font-weight: 700; color: #58a6ff; margin-bottom: 4px; }}
+    .subtitle {{ color: #8b949e; font-size: 1rem; margin-bottom: 40px; }}
+    .badge {{ display: inline-block; background: #238636; color: #fff;
+              font-size: 0.7rem; padding: 2px 10px; border-radius: 20px;
+              vertical-align: middle; margin-left: 10px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+             gap: 16px; margin-bottom: 40px; }}
+    .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+             padding: 20px; }}
+    .card h3 {{ font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em;
+                color: #8b949e; margin-bottom: 12px; }}
+    .status-row {{ display: flex; justify-content: space-between; align-items: center;
+                   padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 0.9rem; }}
+    .status-row:last-child {{ border-bottom: none; }}
+    .dot {{ width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; }}
+    .links {{ display: flex; gap: 12px; flex-wrap: wrap; }}
+    .link {{ display: inline-block; padding: 8px 18px; border-radius: 6px;
+             text-decoration: none; font-size: 0.88rem; font-weight: 500;
+             border: 1px solid #30363d; color: #e6edf3; background: #21262d; }}
+    .link:hover {{ background: #30363d; }}
+    .link.primary {{ background: #238636; border-color: #238636; }}
+    .link.primary:hover {{ background: #2ea043; }}
+    .arch {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+             padding: 20px; margin-bottom: 40px; }}
+    .arch h3 {{ font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em;
+                color: #8b949e; margin-bottom: 16px; }}
+    pre {{ font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.82rem;
+           color: #8b949e; line-height: 1.6; overflow-x: auto; }}
+    pre .hl {{ color: #58a6ff; }}
+    pre .grn {{ color: #3fb950; }}
+    .meta {{ color: #8b949e; font-size: 0.82rem; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ObserveOps <span class="badge">LIVE</span></h1>
+    <p class="subtitle">Cloud-native shipment platform · AWS · Kubernetes · GitOps · AI incident response</p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Services</h3>
+        <div class="status-row"><span>SecureShip API</span><span><span class="dot"></span></span></div>
+        <div class="status-row"><span>StatusService</span><span><span class="dot"></span></span></div>
+        <div class="status-row"><span>RAGService (AI)</span><span><span class="dot"></span></span></div>
+      </div>
+      <div class="card">
+        <h3>Infrastructure</h3>
+        <div class="status-row"><span>Storage</span><span style="color:#3fb950">{storage}</span></div>
+        <div class="status-row"><span>Environment</span><span style="color:#3fb950">{environment}</span></div>
+        <div class="status-row"><span>Version</span><span style="color:#8b949e">{version}</span></div>
+      </div>
+      <div class="card">
+        <h3>Observability</h3>
+        <div class="status-row"><span>Prometheus</span><span><span class="dot"></span></span></div>
+        <div class="status-row"><span>Grafana</span><span><span class="dot"></span></span></div>
+        <div class="status-row"><span>Loki + Promtail</span><span><span class="dot"></span></span></div>
+      </div>
+    </div>
+
+    <div class="arch">
+      <h3>Architecture</h3>
+      <pre>
+  Internet → Route53 (secureship.click) → <span class="hl">ALB (HTTPS/443)</span>
+                                                  │
+              ┌─────────────────────────────────────┤
+              │                                     │
+      <span class="grn">EC2: App Server</span>                  <span class="grn">EC2: Observability</span>
+      nginx (rate limiting)            Prometheus · Grafana
+      secureship   :8001               Loki · AlertManager
+      statusservice:8002                     │
+      ragservice   :8003        alerts → <span class="hl">Lambda</span> (AI diagnosis)
+              │                              └→ <span class="hl">SNS</span> → notifications
+              └→ <span class="hl">DynamoDB</span> (ships table)
+
+  CI/CD: GitHub Actions → ECR → SSM deploy → smoke tests → rollback
+  GitOps: ArgoCD App of Apps → sync waves → K8s manifests
+      </pre>
+    </div>
+
+    <div class="links" style="margin-bottom:40px">
+      <a class="link primary" href="/docs">API Docs (Swagger)</a>
+      <a class="link" href="/api/ships">Ships API</a>
+      <a class="link" href="/grafana/">Grafana Dashboards</a>
+      <a class="link" href="/prometheus/">Prometheus</a>
+      <a class="link" href="https://github.com/RohanReddy-M/observeops" target="_blank">GitHub</a>
+    </div>
+
+    <p class="meta">
+      Terraform · GitHub Actions · Docker · Kubernetes · ArgoCD · Prometheus · Grafana · Loki ·
+      Lambda · DynamoDB · FastAPI · Flask · LangGraph · FAISS · Groq
+    </p>
+  </div>
+</body>
+</html>"""
