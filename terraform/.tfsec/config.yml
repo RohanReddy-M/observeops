@@ -1,0 +1,42 @@
+# tfsec ignore configuration
+# Each ignored check documents WHY it is acceptable for this portfolio project
+# and what the production mitigation would be.
+#
+# Production hardening checklist (items below are deferred, not forgotten):
+#
+# aws-cloudwatch-log-group-retention-period-check
+#   Portfolio: Log groups use default retention (never expire).
+#   Production: Set explicit retention (e.g. 90 days) to control storage cost.
+#
+# aws-vpc-no-public-ip-subnet
+#   The public subnets intentionally receive public IPs for ALB nodes.
+#   EC2 instances are in private subnets and never get public IPs.
+#
+# aws-vpc-no-excessive-port-exposure / aws-ec2-no-public-ingress-sgr
+#   ALB security group must allow 80/443 from 0.0.0.0/0 by definition.
+#   SSH (22) is restricted to admin_cidr only.
+#
+# aws-sns-enable-topic-encryption
+#   The notifications topic does not carry sensitive PII — it carries alert
+#   summaries. In a HIPAA/PCI environment this would be KMS-encrypted.
+#   Production: Add kms_master_key_id = aws_kms_key.sns.arn
+#
+# aws-lambda-enable-tracing
+#   X-Ray tracing adds ~$1/million requests. Sufficient for portfolio.
+#   Production: Set tracing_config { mode = "Active" }
+#
+# aws-cloudtrail-ensure-cloudwatch-integration
+#   CloudTrail is not provisioned — this is a portfolio project.
+#   Production: Add aws_cloudtrail resource with CloudWatch integration.
+
+ignore:
+  - code: aws-cloudwatch-log-group-retention-period-check
+    reason: "Portfolio: default retention acceptable. Production: 90d explicit retention."
+  - code: aws-vpc-no-public-ip-subnet
+    reason: "Public subnets host ALB which requires public IPs by design."
+  - code: aws-sns-enable-topic-encryption
+    reason: "Alert summaries are non-sensitive. KMS encryption deferred to production."
+  - code: aws-lambda-enable-tracing
+    reason: "X-Ray tracing deferred; Prometheus metrics cover observability needs."
+  - code: aws-cloudtrail-ensure-cloudwatch-integration
+    reason: "CloudTrail not provisioned in portfolio. Required for production."

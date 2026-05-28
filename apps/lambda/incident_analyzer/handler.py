@@ -1,8 +1,10 @@
+import hashlib
+import hmac
 import json
-import os
 import logging
-import urllib.request
+import os
 import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 import boto3
@@ -12,6 +14,17 @@ logger.setLevel(logging.INFO)
 
 RAGSERVICE_URL = os.environ.get("RAGSERVICE_URL", "https://secureship.click/ai/query")
 NOTIFICATION_TOPIC_ARN = os.environ.get("NOTIFICATION_TOPIC_ARN", "")
+# Shared secret injected by Terraform, validated on every AlertManager webhook.
+# If unset (local testing), auth is skipped.
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
+
+def _validate_secret(headers: dict) -> bool:
+    if not WEBHOOK_SECRET:
+        return True  # Auth not configured — allow (local/test)
+    provided = headers.get("X-Webhook-Secret", "")
+    # Constant-time comparison prevents timing attacks
+    return hmac.compare_digest(provided, WEBHOOK_SECRET)
 
 
 def query_ragservice(question: str) -> str:
@@ -97,6 +110,11 @@ def lambda_handler(event, context):
         return {"statusCode": 200, "body": json.dumps(result)}
 
     # AlertManager webhook via Lambda Function URL
+    headers = event.get("headers", {})
+    if not _validate_secret(headers):
+        logger.warning(json.dumps({"event": "unauthorized_webhook", "source_ip": event.get("requestContext", {}).get("http", {}).get("sourceIp", "unknown")}))
+        return {"statusCode": 401, "body": "Unauthorized"}
+
     body = event.get("body", "{}")
     if isinstance(body, str):
         try:

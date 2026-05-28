@@ -38,6 +38,41 @@ resource "aws_iam_role_policy" "sns_publish" {
   })
 }
 
+# Random shared secret injected into AlertManager config and validated by Lambda.
+# Prevents anyone who discovers the Function URL from triggering analysis.
+resource "random_password" "webhook_secret" {
+  length  = 32
+  special = false
+}
+
+resource "aws_ssm_parameter" "webhook_secret" {
+  name  = "/${var.project_name}/production/lambda_webhook_secret"
+  type  = "SecureString"
+  value = random_password.webhook_secret.result
+  tags  = var.common_tags
+}
+
+# Dead-letter queue: if Lambda fails processing an alert, the event lands here
+# so it can be retried or inspected — nothing is silently lost.
+resource "aws_sqs_queue" "dlq" {
+  name                      = "${var.project_name}-incident-analyzer-dlq"
+  message_retention_seconds = 1209600 # 14 days
+  tags                      = var.common_tags
+}
+
+resource "aws_iam_role_policy" "sqs_dlq" {
+  name = "sqs-dlq"
+  role = aws_iam_role.incident_analyzer.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage"]
+      Resource = [aws_sqs_queue.dlq.arn]
+    }]
+  })
+}
+
 resource "aws_lambda_function" "incident_analyzer" {
   filename         = data.archive_file.incident_analyzer.output_path
   function_name    = "${var.project_name}-incident-analyzer"
@@ -47,10 +82,20 @@ resource "aws_lambda_function" "incident_analyzer" {
   source_code_hash = data.archive_file.incident_analyzer.output_base64sha256
   timeout          = 60
 
+  # Prevent AlertManager from flooding RAGService — cap concurrent invocations.
+  # If AlertManager fires 100 alerts simultaneously, at most 5 are processed
+  # at once; the rest queue. Adjust based on RAGService capacity.
+  reserved_concurrent_executions = 5
+
+  dead_letter_config {
+    target_arn = aws_sqs_queue.dlq.arn
+  }
+
   environment {
     variables = {
       RAGSERVICE_URL         = "https://${var.domain_name}/ai/query"
       NOTIFICATION_TOPIC_ARN = aws_sns_topic.notifications.arn
+      WEBHOOK_SECRET         = random_password.webhook_secret.result
     }
   }
 
