@@ -40,7 +40,7 @@ fi
 
 echo "==> Triggering CI/CD deployment..."
 cd ..
-git commit --allow-empty -m "chore: trigger deploy after infra-up" && git push
+git pull --rebase && git commit --allow-empty -m "chore: trigger deploy after infra-up" && git push
 
 echo ""
 echo "==> Done! Wait ~8 minutes for EC2 bootstrap + CI/CD to finish."
