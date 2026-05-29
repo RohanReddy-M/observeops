@@ -205,3 +205,10 @@ resource "aws_instance" "observability" {
 
   depends_on = [aws_instance.app]
 }
+
+resource "aws_ssm_parameter" "obs_server_ip" {
+  name  = "/${var.project_name}/production/obs_server_ip"
+  type  = "String"
+  value = aws_instance.observability.private_ip
+  tags  = var.common_tags
+}
