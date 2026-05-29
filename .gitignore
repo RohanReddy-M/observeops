@@ -5,6 +5,8 @@
 *.tfstate.backup
 *.tfvars
 !example.tfvars
+tfplan
+*.zip
 
 # Never commit these
 *.pem
