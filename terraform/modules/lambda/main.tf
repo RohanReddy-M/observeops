@@ -82,11 +82,6 @@ resource "aws_lambda_function" "incident_analyzer" {
   source_code_hash = data.archive_file.incident_analyzer.output_base64sha256
   timeout          = 60
 
-  # Prevent AlertManager from flooding RAGService — cap concurrent invocations.
-  # If AlertManager fires 100 alerts simultaneously, at most 5 are processed
-  # at once; the rest queue. Adjust based on RAGService capacity.
-  reserved_concurrent_executions = 5
-
   dead_letter_config {
     target_arn = aws_sqs_queue.dlq.arn
   }
