@@ -13,7 +13,7 @@
 
 terraform {
   required_version = ">= 1.5.0"
-  
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -74,7 +74,7 @@ provider "aws" {
 # AMI IDs are region-specific, so we look it up dynamically instead of hardcoding
 data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099720109477"]    # Canonical (Ubuntu's publisher) account ID
+  owners      = ["099720109477"] # Canonical (Ubuntu's publisher) account ID
 
   filter {
     name   = "name"
