@@ -81,6 +81,10 @@ jobs:
       - name: Run RAGService tests
         run: pytest apps/ragservice/tests/ -v
 
+      - name: Run RAG quality evaluation harness
+        run: python apps/ragservice/eval.py
+        continue-on-error: true
+
       # Verify Docker build works (catches Dockerfile errors early)
       - name: Verify Docker builds
         run: |
