@@ -1,0 +1,12 @@
+# Force LF line endings for all files on checkout
+# Prevents Windows CRLF from breaking bash scripts in WSL/Linux
+* text=auto eol=lf
+
+# Explicitly force shell scripts to LF
+*.sh text eol=lf
+
+# Binary files — no line ending conversion
+*.png binary
+*.jpg binary
+*.zip binary
+*.pem binary

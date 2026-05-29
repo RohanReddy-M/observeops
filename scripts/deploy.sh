@@ -60,11 +60,11 @@ if [ "$1" == "--rollback" ]; then
     fi
     PREVIOUS_IMAGE=$(cat "$ROLLBACK_FILE")
     log_warning "ROLLING BACK to: $PREVIOUS_IMAGE"
-    
+
     # Update docker-compose to use the previous image
     export SECURESHIP_IMAGE="$PREVIOUS_IMAGE"
     docker compose -f "$APP_DIR/docker-compose.yml" up -d secureship statusservice
-    
+
     log_info "Rollback complete."
     sleep 10
     if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
@@ -125,7 +125,7 @@ done
 if [ $RETRIES -eq $MAX_RETRIES ]; then
     log_error "SecureShip failed to become healthy after 60 seconds"
     log_warning "Initiating automatic rollback..."
-    
+
     if [ -f "$ROLLBACK_FILE" ]; then
         "$0" --rollback
     else
