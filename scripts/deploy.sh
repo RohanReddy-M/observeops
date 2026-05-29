@@ -140,6 +140,22 @@ docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps statusservice
 log_info "Deploying RAGService..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps ragservice
 
+log_info "Injecting obs server IP into nginx config..."
+OBS_IP=$(aws ssm get-parameter \
+    --name "/observeops/production/obs_server_ip" \
+    --region "$AWS_REGION" \
+    --query "Parameter.Value" \
+    --output text 2>/dev/null || echo "")
+
+git -C "$APP_DIR" checkout HEAD -- nginx/nginx.conf
+
+if [ -n "$OBS_IP" ]; then
+    sed -i "s|__OBS_SERVER_IP__|${OBS_IP}|g" "$APP_DIR/nginx/nginx.conf"
+    log_info "Obs server IP injected: ${OBS_IP} ✓"
+else
+    log_warning "Obs server IP not found in SSM — Grafana/Prometheus proxy will not work"
+fi
+
 log_info "Injecting Lambda Function URL into AlertManager config..."
 LAMBDA_URL=$(aws ssm get-parameter \
     --name "/observeops/production/lambda_incident_url" \
