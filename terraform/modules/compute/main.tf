@@ -90,8 +90,8 @@ resource "aws_iam_role_policy" "ec2" {
         # Scoped to only our project's parameters — least privilege.
         # This is how GROQ_API_KEY gets to the EC2 instance without
         # appearing in git, environment variables, or AMI images.
-        Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
         Resource = "arn:aws:ssm:*:*:parameter/observeops/*"
       },
       {
@@ -121,8 +121,8 @@ resource "aws_instance" "app" {
   # AMI: Amazon Machine Image - the base OS image
   # This is Ubuntu 22.04 LTS for ap-south-1 (Mumbai)
   # LTS = Long Term Support = stable, security patches for 5 years
-  ami           = var.ubuntu_ami
-  
+  ami = var.ubuntu_ami
+
   # t3.small: 2 vCPU, 2GB RAM - enough for our 2 services + nginx
   # t3 = burstable instances: can burst to 100% CPU occasionally
   # Good for dev/staging, use t3.medium or dedicated for prod
@@ -130,13 +130,13 @@ resource "aws_instance" "app" {
 
   # Place in private subnet (no public IP, can't be reached directly from internet)
   subnet_id = var.private_subnet_ids[0]
-  
+
   # Attach security group
   vpc_security_group_ids = [var.app_sg_id]
-  
+
   # Attach IAM role for ECR access
   iam_instance_profile = aws_iam_instance_profile.ec2.name
-  
+
   # SSH key pair
   key_name = aws_key_pair.main.key_name
 
@@ -144,9 +144,9 @@ resource "aws_instance" "app" {
   # Docker images + logs can consume significant space
   root_block_device {
     volume_size = 20
-    volume_type = "gp3"    # gp3 = General Purpose SSD v3, cheaper and faster than gp2
-    encrypted   = true     # Encrypt at rest - security best practice
-    
+    volume_type = "gp3" # gp3 = General Purpose SSD v3, cheaper and faster than gp2
+    encrypted   = true  # Encrypt at rest - security best practice
+
     tags = merge(var.common_tags, {
       Name = "${var.project_name}-app-volume"
     })
@@ -158,8 +158,8 @@ resource "aws_instance" "app" {
   # which blocks that attack. This is an AWS security best practice since 2020.
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "required"    # Forces IMDSv2 (blocks IMDSv1)
-    http_put_response_hop_limit = 1             # Prevents containers from reaching IMDS
+    http_tokens                 = "required" # Forces IMDSv2 (blocks IMDSv1)
+    http_put_response_hop_limit = 1          # Prevents containers from reaching IMDS
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data_app.sh", {
@@ -176,25 +176,25 @@ resource "aws_instance" "app" {
 # ─── Observability Server ─────────────────────────────────────────────────────
 resource "aws_instance" "observability" {
   ami           = var.ubuntu_ami
-  instance_type = var.obs_instance_type    # t3.small is fine for Prometheus+Grafana
-  
+  instance_type = var.obs_instance_type # t3.small is fine for Prometheus+Grafana
+
   subnet_id              = var.private_subnet_ids[1]
   vpc_security_group_ids = [var.observability_sg_id]
   iam_instance_profile   = aws_iam_instance_profile.ec2.name
   key_name               = aws_key_pair.main.key_name
 
   root_block_device {
-    volume_size = 30      # Prometheus TSDB and Loki need more space
+    volume_size = 30 # Prometheus TSDB and Loki need more space
     volume_type = "gp3"
     encrypted   = true
-    
+
     tags = merge(var.common_tags, {
       Name = "${var.project_name}-obs-volume"
     })
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data_obs.sh", {
-    project_name = var.project_name
+    project_name  = var.project_name
     app_server_ip = aws_instance.app.private_ip
   }))
 

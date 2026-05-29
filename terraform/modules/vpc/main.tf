@@ -18,7 +18,7 @@ resource "aws_vpc" "main" {
   # CIDR block: 10.0.0.0/16 gives us 65,536 IP addresses (10.0.0.0 - 10.0.255.255)
   # We'll carve this into smaller subnets
   cidr_block = var.vpc_cidr
-  
+
   # enable_dns_hostnames: EC2 instances get DNS names like ec2-1-2-3-4.compute.amazonaws.com
   # Required for ECS, EKS, and many AWS services to work correctly
   enable_dns_hostnames = true
@@ -49,14 +49,14 @@ resource "aws_internet_gateway" "main" {
 
 resource "aws_subnet" "public" {
   count = length(var.public_subnet_cidrs)
-  
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.public_subnet_cidrs[count.index]
-  
+
+  vpc_id     = aws_vpc.main.id
+  cidr_block = var.public_subnet_cidrs[count.index]
+
   # Place subnets in different availability zones for redundancy
   # ap-south-1 has: ap-south-1a, ap-south-1b, ap-south-1c
   availability_zone = var.availability_zones[count.index]
-  
+
   # Auto-assign public IP to any resource launched in this subnet
   # This is what makes it "public" - resources get internet-routable IPs
   map_public_ip_on_launch = true
@@ -76,11 +76,11 @@ resource "aws_subnet" "public" {
 
 resource "aws_subnet" "private" {
   count = length(var.private_subnet_cidrs)
-  
+
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnet_cidrs[count.index]
   availability_zone = var.availability_zones[count.index]
-  
+
   # NO public IPs for private subnet resources
   map_public_ip_on_launch = false
 
@@ -108,7 +108,7 @@ resource "aws_subnet" "private" {
 # Elastic IP for the NAT Gateway (static public IP address)
 resource "aws_eip" "nat" {
   domain = "vpc"
-  
+
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-nat-eip"
   })
