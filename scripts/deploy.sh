@@ -217,4 +217,5 @@ echo "  Prometheus:      http://localhost:9090"
 echo ""
 
 # Log deployment event (useful for correlating incidents with deployments)
+mkdir -p /var/log/observeops
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) DEPLOY SUCCESS env=$DEPLOY_ENV" >> /var/log/observeops/deployments.log
