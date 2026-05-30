@@ -12,6 +12,19 @@ from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import Resource
+
+_resource = Resource.create({"service.name": "secureship", "service.version": "1.0.0"})
+_provider = TracerProvider(resource=_resource)
+_otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
+_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=_otlp_endpoint, insecure=True)))
+trace.set_tracer_provider(_provider)
+
 try:
     import boto3
     from botocore.exceptions import ClientError
@@ -57,6 +70,7 @@ APP_INFO.labels(
 ).set(1)
 
 app = FastAPI(title="SecureShip API", version="1.0.0")
+FastAPIInstrumentor.instrument_app(app)
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 # Set API_KEY env var to enable key-based auth. Empty = open mode (local dev).
