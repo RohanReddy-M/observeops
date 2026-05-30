@@ -99,3 +99,17 @@ scrape_configs:
       - targets: ['grafana:3000']
         labels:
           service: 'grafana'
+
+  # ─── Loki ───────────────────────────────────────────────────────────────────
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+        labels:
+          service: 'loki'
+
+  # ─── AlertManager ───────────────────────────────────────────────────────────
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['alertmanager:9093']
+        labels:
+          service: 'alertmanager'
