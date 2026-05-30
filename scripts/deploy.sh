@@ -176,6 +176,22 @@ else
     log_warning "Lambda Function URL not found in SSM — alertmanager will use placeholder URL"
 fi
 
+log_info "Injecting Slack webhook URL into AlertManager config..."
+SLACK_URL=$(aws ssm get-parameter \
+    --name "/observeops/production/slack_webhook_url" \
+    --region "$AWS_REGION" \
+    --with-decryption \
+    --query "Parameter.Value" \
+    --output text 2>/dev/null || echo "")
+
+if [ -n "$SLACK_URL" ]; then
+    sed -i "s|__SLACK_WEBHOOK_URL__|${SLACK_URL}|g" \
+        "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
+    log_info "Slack webhook injected ✓"
+else
+    log_warning "Slack webhook URL not found in SSM — alerts will not post to Slack"
+fi
+
 log_info "Starting monitoring stack..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d prometheus grafana loki promtail alertmanager node-exporter
 
