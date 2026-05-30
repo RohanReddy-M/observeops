@@ -86,7 +86,7 @@ receivers:
 
   - name: 'slack-critical'
     slack_configs:
-      - api_url: '__SLACK_WEBHOOK_URL__'
+      - api_url: '__SLACK_WEBHOOK_CRITICAL__'
         channel: '#alerts-critical'
         # send_resolved: true means we get notified when the alert resolves too
         send_resolved: true
@@ -102,7 +102,7 @@ receivers:
 
   - name: 'slack-warnings'
     slack_configs:
-      - api_url: '__SLACK_WEBHOOK_URL__'
+      - api_url: '__SLACK_WEBHOOK_WARNINGS__'
         channel: '#alerts-warnings'
         send_resolved: true
         title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'

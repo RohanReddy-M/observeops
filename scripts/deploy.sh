@@ -176,20 +176,35 @@ else
     log_warning "Lambda Function URL not found in SSM — alertmanager will use placeholder URL"
 fi
 
-log_info "Injecting Slack webhook URL into AlertManager config..."
-SLACK_URL=$(aws ssm get-parameter \
-    --name "/observeops/production/slack_webhook_url" \
+log_info "Injecting Slack webhook URLs into AlertManager config..."
+SLACK_CRITICAL=$(aws ssm get-parameter \
+    --name "/observeops/production/slack_webhook_critical" \
     --region "$AWS_REGION" \
     --with-decryption \
     --query "Parameter.Value" \
     --output text 2>/dev/null || echo "")
 
-if [ -n "$SLACK_URL" ]; then
-    sed -i "s|__SLACK_WEBHOOK_URL__|${SLACK_URL}|g" \
+SLACK_WARNINGS=$(aws ssm get-parameter \
+    --name "/observeops/production/slack_webhook_warnings" \
+    --region "$AWS_REGION" \
+    --with-decryption \
+    --query "Parameter.Value" \
+    --output text 2>/dev/null || echo "")
+
+if [ -n "$SLACK_CRITICAL" ]; then
+    sed -i "s|__SLACK_WEBHOOK_CRITICAL__|${SLACK_CRITICAL}|g" \
         "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
-    log_info "Slack webhook injected ✓"
+    log_info "Slack critical webhook injected ✓"
 else
-    log_warning "Slack webhook URL not found in SSM — alerts will not post to Slack"
+    log_warning "Slack critical webhook not in SSM — #alerts-critical will not receive messages"
+fi
+
+if [ -n "$SLACK_WARNINGS" ]; then
+    sed -i "s|__SLACK_WEBHOOK_WARNINGS__|${SLACK_WARNINGS}|g" \
+        "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
+    log_info "Slack warnings webhook injected ✓"
+else
+    log_warning "Slack warnings webhook not in SSM — #alerts-warnings will not receive messages"
 fi
 
 log_info "Starting monitoring stack..."
