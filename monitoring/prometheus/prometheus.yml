@@ -100,6 +100,14 @@ scrape_configs:
         labels:
           service: 'grafana'
 
+  # ─── LLM Alert Autopilot ────────────────────────────────────────────────────
+  - job_name: 'llm-alert-autopilot'
+    static_configs:
+      - targets: ['llm-alert-autopilot:8080']
+        labels:
+          service: 'llm-alert-autopilot'
+          team: 'ai'
+
   # ─── Loki ───────────────────────────────────────────────────────────────────
   - job_name: 'loki'
     static_configs:

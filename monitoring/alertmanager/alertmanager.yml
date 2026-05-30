@@ -37,7 +37,13 @@ route:
 
   # ─── Sub-routes ─────────────────────────────────────────────────────────────
   routes:
-    # All firing alerts go through the Lambda incident analyzer first for diagnosis
+    # All firing alerts go through the LLM Alert Autopilot (containerised, always-on)
+    - match:
+        alertstate: firing
+      receiver: 'llm-autopilot'
+      continue: true          # keep matching routes below after this
+
+    # All firing alerts also go through the Lambda incident analyzer (serverless, production)
     - match:
         alertstate: firing
       receiver: 'lambda-incident-analyzer'
@@ -61,6 +67,14 @@ receivers:
   # Null receiver: silently accepts alerts, sends nothing.
   # Used as the default when Slack is not configured (local dev / CI).
   - name: 'null'
+
+  # LLM Alert Autopilot: containerised webhook receiver — queries Loki for log context,
+  # calls Groq LLM for diagnosis, sends Slack notification.
+  # Runs in the same Docker network so it can reach Loki directly.
+  - name: 'llm-autopilot'
+    webhook_configs:
+      - url: 'http://llm-alert-autopilot:8080/webhook'
+        send_resolved: false
 
   # Lambda Incident Analyzer: POST to the Lambda Function URL for every firing alert.
   # Lambda calls RAGService, publishes SNS summary, returns AI diagnosis.

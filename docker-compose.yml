@@ -224,6 +224,32 @@ services:
       - observeops
     restart: unless-stopped
 
+  # ─── LLM Alert Autopilot ─────────────────────────────────────────────────────
+  # Receives AlertManager webhooks, queries Loki for log context,
+  # calls Groq LLM for diagnosis, sends fix command to Slack.
+  llm-alert-autopilot:
+    image: ghcr.io/rohanreddy-m/llm-alert-autopilot:latest
+    build:
+      context: ../llm-alert-autopilot
+      dockerfile: Dockerfile
+    container_name: llm-alert-autopilot
+    ports:
+      - "8080:8080"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - LOKI_URL=http://loki:3100
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - loki
+    networks:
+      - observeops
+    restart: unless-stopped
+
   # ─── Grafana Tempo (Distributed Tracing) ─────────────────────────────────────
   # Tempo stores traces. OpenTelemetry Collector ships traces TO Tempo.
   # Grafana reads FROM Tempo. Completes the metrics + logs + traces triad.
