@@ -26,7 +26,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: statusservice
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/statusservice:7a63d6e
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/statusservice:3fd3b2f
           ports:
             - containerPort: 8002
           securityContext:
