@@ -116,7 +116,7 @@ def db_list_ships() -> list:
     try:
         result = table.scan()
         return result.get("Items", [])
-    except ClientError as e:
+    except Exception as e:
         logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
         return list(_LOCAL_SHIPS.values())
 
@@ -128,7 +128,7 @@ def db_get_ship(ship_id: str) -> dict | None:
     try:
         result = table.get_item(Key={"ship_id": ship_id})
         return result.get("Item")
-    except ClientError as e:
+    except Exception as e:
         logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
         return _LOCAL_SHIPS.get(ship_id)
 
