@@ -254,6 +254,26 @@ groups:
           summary: "RAGService is up but knowledge base is empty (0 documents)"
           description: "RAGService is running but the FAISS index has no documents. All queries will return 'I don't have enough context'. Fix: sudo docker compose -f /opt/observeops/docker-compose.yml restart ragservice (auto-ingest will repopulate)"
 
+  # ─── Deadman Switch ────────────────────────────────────────────────────────
+  # The hardest problem in monitoring: how do you know your monitoring system itself is alive?
+  #
+  # The Watchdog alert solves this. It always fires — `vector(1)` is always true.
+  # AlertManager receives it every minute and routes it to a sink that pings healthchecks.io.
+  # If Prometheus dies, AlertManager dies, or the network between them breaks —
+  # the pings stop, and healthchecks.io emails/Slacks you within 5 minutes.
+  #
+  # This is the difference between monitoring and reliable monitoring.
+  # Without a deadman switch, your monitoring can be dead and you won't know.
+  - name: deadman_switch
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Watchdog — confirms Prometheus and AlertManager pipeline is alive"
+          description: "This alert always fires. If it stops appearing in AlertManager, the alerting pipeline is broken. Route this to healthchecks.io in production."
+
   # ─── No Logs Alert ─────────────────────────────────────────────────────────
   - name: observability
     rules:

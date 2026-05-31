@@ -37,7 +37,17 @@ route:
 
   # ─── Sub-routes ─────────────────────────────────────────────────────────────
   routes:
-    # All alerts go through LLM Alert Autopilot first for AI diagnosis
+    # Watchdog deadman switch: intercept BEFORE llm-autopilot so it is never
+    # "diagnosed" by the LLM (it's not a real alert) and never spams Slack.
+    # In production: configure HEALTHCHECKS_PING_URL in SSM and set it here.
+    # healthchecks.io sends you an email if pings stop for > 5 minutes.
+    - match:
+        alertname: Watchdog
+      receiver: 'watchdog-sink'
+      repeat_interval: 5m
+      continue: false
+
+    # All other alerts go through LLM Alert Autopilot first for AI diagnosis
     - receiver: 'llm-autopilot'
       continue: true
 
@@ -59,6 +69,18 @@ receivers:
   # Null receiver: silently accepts alerts, sends nothing.
   # Used as the default when Slack is not configured (local dev / CI).
   - name: 'null'
+
+  # Watchdog sink: accepts the deadman switch heartbeat.
+  # In production: replace this with a webhook_config pointing to healthchecks.io.
+  # How to set up healthchecks.io (free tier):
+  #   1. Create account at healthchecks.io
+  #   2. Create a new check with period=5min, grace=10min
+  #   3. Copy the ping URL and store in SSM: /observeops/production/healthchecks_url
+  #   4. Replace 'null' below with:
+  #      webhook_configs:
+  #        - url: '<your-healthchecks-ping-url>'
+  #          send_resolved: false
+  - name: 'watchdog-sink'
 
   # LLM Alert Autopilot: containerised webhook receiver — queries Loki for log context,
   # calls Groq LLM for diagnosis, sends Slack notification.
