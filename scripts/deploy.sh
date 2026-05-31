@@ -320,6 +320,21 @@ echo "  Grafana:    https://secureship.click/grafana/"
 echo "  Prometheus: https://secureship.click/prometheus/"
 echo ""
 
-# Log deployment event (useful for correlating incidents with deployments)
+# ─── Register deployment with LLM Alert Autopilot (DORA + LLM context) ───────
+# This is what makes the LLM say "this alert started 8 minutes after commit X."
+# Without this, the on-call has to manually correlate alert time with git log.
+DEPLOY_COMMIT="${IMAGE_TAG:-$(git -C "${APP_DIR:-/opt/observeops}" rev-parse --short HEAD 2>/dev/null || echo "unknown")}"
+DEPLOY_USER="${DEPLOY_USER:-$(whoami)}"
+curl -sf -X POST http://localhost:8080/deploy-event \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"commit\":   \"${DEPLOY_COMMIT}\",
+        \"deployer\": \"${DEPLOY_USER}\",
+        \"status\":   \"success\",
+        \"services\": [\"secureship\", \"statusservice\", \"ragservice\"]
+    }" > /dev/null 2>&1 || true  # non-fatal — monitoring shouldn't block deploy
+
+# Log deployment event locally as backup
 mkdir -p /var/log/observeops
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) DEPLOY SUCCESS env=$DEPLOY_ENV" >> /var/log/observeops/deployments.log
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) DEPLOY SUCCESS commit=${DEPLOY_COMMIT} deployer=${DEPLOY_USER}" \
+    >> /var/log/observeops/deployments.log

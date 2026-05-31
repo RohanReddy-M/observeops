@@ -1,0 +1,364 @@
+{
+  "title": "ObserveOps — DORA Metrics",
+  "uid": "observeops-dora",
+  "description": "Deployment frequency, MTTR, and change failure rate. These are the four metrics Google uses to measure engineering team performance.",
+  "tags": ["observeops", "dora", "engineering"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "60s",
+  "time": { "from": "now-30d", "to": "now" },
+  "timepicker": {},
+  "panels": [
+
+    {
+      "id": 100,
+      "title": "What are DORA metrics?",
+      "type": "text",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 3 },
+      "options": {
+        "content": "**DORA** (DevOps Research and Assessment) metrics measure engineering team effectiveness. Google's State of DevOps report defines four key metrics. Elite performers deploy multiple times per day, recover in under an hour, and have a change failure rate below 15%. These metrics answer: *are we getting better at delivering software reliably?*\n\n| Metric | Elite | High | Medium | Low |\n|--------|-------|------|--------|-----|\n| Deployment Frequency | Multiple/day | Weekly | Monthly | Less often |\n| MTTR | < 1 hour | < 1 day | < 1 week | > 1 month |\n| Change Failure Rate | 0–15% | 0–15% | 16–30% | > 30% |",
+        "mode": "markdown"
+      }
+    },
+
+    {
+      "id": 200,
+      "title": "Deployment Metrics",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 3, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 1,
+      "title": "Deployments — Last 7 Days",
+      "description": "Elite: multiple per day. High: weekly. Deployment frequency is the leading indicator of team health — teams that deploy more often have smaller, safer changes.",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 4, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "increase(deployments_total[7d])",
+        "legendFormat": "Deploys (7d)"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "green",  "value": 7 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 2,
+      "title": "Deployments — Last 30 Days",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 4, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "increase(deployments_total[30d])",
+        "legendFormat": "Deploys (30d)"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0 },
+              { "color": "yellow", "value": 4 },
+              { "color": "green",  "value": 30 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 3,
+      "title": "Time Since Last Deploy",
+      "description": "How long ago was the last production deployment.",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 4, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "time() - last_deployment_timestamp_seconds",
+        "legendFormat": "Time Since Deploy"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": 0 },
+              { "color": "yellow", "value": 604800 },
+              { "color": "red",    "value": 2592000 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 4,
+      "title": "Last Deployment",
+      "description": "Most recent deployment commit recorded by deploy.sh.",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 4, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "last_deployment_timestamp_seconds",
+        "legendFormat": "Last Deploy Timestamp"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsLocalNoDateIfToday"
+        }
+      }
+    },
+
+    {
+      "id": 5,
+      "title": "Deployment Activity Over Time",
+      "description": "Cumulative deployment count. Each step upward is a production deployment. Flat lines = no deploys. Steep lines = active deployment period.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 7 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "increase(deployments_total[1d])",
+        "legendFormat": "Deploys per day"
+      }],
+      "options": {
+        "tooltip": { "mode": "single" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "drawStyle": "bars"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": 0 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 300,
+      "title": "Recovery Metrics (MTTR)",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 6,
+      "title": "MTTR — Median (p50)",
+      "description": "Mean Time To Recovery — how long from alert firing to alert resolving. Elite teams: under 1 hour. Calculated from AlertManager resolved-alert timestamps.",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 17, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "histogram_quantile(0.50, sum(rate(alert_mttr_seconds_bucket[30d])) by (le))",
+        "legendFormat": "MTTR p50"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": 0 },
+              { "color": "yellow", "value": 3600 },
+              { "color": "orange", "value": 86400 },
+              { "color": "red",    "value": 604800 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 7,
+      "title": "MTTR — p95 (worst 5%)",
+      "description": "95th percentile recovery time. This is your worst-case incident recovery time — the long tail that impacts user trust most.",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 17, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "histogram_quantile(0.95, sum(rate(alert_mttr_seconds_bucket[30d])) by (le))",
+        "legendFormat": "MTTR p95"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": 0 },
+              { "color": "yellow", "value": 3600 },
+              { "color": "red",    "value": 86400 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 8,
+      "title": "Alert Volume (30d)",
+      "description": "Total alerts that fired. High alert volume with low MTTR = good system + good team. High alert volume with high MTTR = system problems piling up.",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 17, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "increase(autopilot_alerts_received_total{status='firing'}[30d])",
+        "legendFormat": "Alerts Fired (30d)"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "red",    "value": 50 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 9,
+      "title": "AI Diagnosis Success Rate",
+      "description": "Fraction of alerts where the LLM successfully produced a diagnosis. Low = Groq API issues. High = AI on-call assistant is working.",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 17, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "rate(autopilot_alerts_diagnosed_total[7d]) / rate(autopilot_alerts_received_total{status='firing'}[7d]) * 100",
+        "legendFormat": "Diagnosis Success %"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0 },
+              { "color": "yellow", "value": 70 },
+              { "color": "green",  "value": 90 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 10,
+      "title": "MTTR Distribution Over Time",
+      "description": "Recovery time trend. Rising p95 = incidents are getting harder to resolve. Flat or falling = operational improvements are working.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 7 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.50, rate(alert_mttr_seconds_bucket[7d]))",
+          "legendFormat": "MTTR p50"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.95, rate(alert_mttr_seconds_bucket[7d]))",
+          "legendFormat": "MTTR p95"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "vector(3600)",
+          "legendFormat": "Elite threshold (1h)"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Elite threshold (1h)" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+            ]
+          }
+        ]
+      }
+    }
+
+  ]
+}

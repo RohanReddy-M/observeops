@@ -160,10 +160,23 @@ class QueryRequest(BaseModel):
 
 @app.get("/health")
 def health():
+    doc_count = 0
+    if pipeline.vector_store is not None:
+        try:
+            doc_count = pipeline.vector_store.index.ntotal
+        except Exception:
+            doc_count = -1
+
+    # A service can be UP but effectively broken if the FAISS index is empty.
+    # Discovered during chaos experiment 2026-05-31: container restarted,
+    # healthcheck passed, but all queries returned "I don't have enough context."
+    # Now we surface the index state so Prometheus can alert on it.
     return {
-        "status": "healthy",
-        "service": "ragservice",
-        "vector_store_ready": pipeline.vector_store is not None,
+        "status":              "healthy",
+        "service":             "ragservice",
+        "vector_store_ready":  pipeline.vector_store is not None,
+        "vector_store_docs":   doc_count,
+        "knowledge_base_state": "empty — re-ingest runbooks" if doc_count == 0 else "loaded",
     }
 
 
@@ -189,6 +202,15 @@ def ingest(request: IngestRequest):
         raise HTTPException(status_code=400, detail="texts list contains empty strings")
     if len(request.texts) > 100:
         raise HTTPException(status_code=400, detail="maximum 100 texts per request")
+    # Postmortem action item 2026-05-31: a single very large document was causing OOM.
+    # A 10MB text gets split into ~20,000 chunks, each embedded = huge memory spike.
+    # 50KB per text is enough for the longest runbook (most are < 5KB).
+    oversized = [i for i, t in enumerate(request.texts) if len(t) > 51200]
+    if oversized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"texts at indices {oversized} exceed 50KB limit. Split large documents before ingesting."
+        )
 
     try:
         count = pipeline.ingest(request.texts, request.metadatas)
