@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="LLM Alert Autopilot", version="2.0.0")
 
 # ─── Config ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY  = os.environ["GROQ_API_KEY"]
+GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL", "")
 LOKI_URL      = os.getenv("LOKI_URL", "http://loki:3100")
 GRAFANA_URL   = os.getenv("GRAFANA_URL", "http://grafana:3000")
@@ -61,7 +61,14 @@ LOG_LINES     = 30
 LOKI_LOOKBACK = "5m"
 LLM_TIMEOUT   = 15
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Graceful degradation: container starts even without GROQ key.
+# Without a key, diagnosis returns a clear "not configured" message instead of crashing.
+# Set GROQ_API_KEY in .env (free at console.groq.com) to enable LLM diagnosis.
+if GROQ_API_KEY:
+    groq_client = Groq(api_key=GROQ_API_KEY)
+else:
+    groq_client = None
+    logger.warning("GROQ_API_KEY not set — LLM diagnosis disabled. Add it to .env to enable.")
 
 # ─── In-memory deploy history (max 10, survives until container restart) ────
 # Populated by POST /deploy-event from deploy.sh.
@@ -183,6 +190,13 @@ FIX: <one shell command>
 
 def _diagnose(alertname: str, labels: dict, annotations: dict,
               log_lines: list[str], deploy_context: str) -> str:
+    if groq_client is None:
+        return (
+            "DIAGNOSIS: LLM diagnosis is disabled — GROQ_API_KEY not set in .env.\n"
+            "FIX: Add GROQ_API_KEY=gsk_... to .env and restart: "
+            "docker compose restart llm-alert-autopilot"
+        )
+
     log_block = "\n".join(log_lines) if log_lines else "(no recent error logs found in Loki)"
 
     user_content = f"""ALERT: {alertname}
