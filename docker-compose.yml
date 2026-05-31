@@ -38,10 +38,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-    # Connect to our custom network so containers can find each other by name
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          memory: 128M
     networks:
       - observeops
-    # Restart policy: always restart if container crashes
     restart: unless-stopped
 
   # ─── Status Service ──────────────────────────────────────────────────────────
@@ -60,6 +65,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          memory: 64M
     networks:
       - observeops
     restart: unless-stopped
@@ -84,6 +96,13 @@ services:
       interval: 30s
       timeout: 15s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          memory: 256M
     networks:
       - observeops
     restart: unless-stopped
@@ -107,6 +126,11 @@ services:
       - secureship
       - statusservice
       - ragservice
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
     networks:
       - observeops
     restart: unless-stopped
@@ -128,6 +152,18 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=15d'    # Keep 15 days of metrics
       - '--web.enable-lifecycle'               # Allows hot-reload of config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 256M
     networks:
       - observeops
     restart: unless-stopped
@@ -150,6 +186,18 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       # dashboards/ contains the actual JSON files Grafana loads as dashboards
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          memory: 128M
     depends_on:
       - prometheus
     networks:
@@ -168,6 +216,18 @@ services:
       - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
       - loki_data:/loki
     command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          memory: 128M
     networks:
       - observeops
     restart: unless-stopped
@@ -183,6 +243,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/log:/var/log:ro
     command: -config.file=/etc/promtail/config.yml
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
     depends_on:
       - loki
     networks:
@@ -201,6 +266,18 @@ services:
       - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          memory: 64M
     networks:
       - observeops
     restart: unless-stopped

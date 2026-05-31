@@ -42,6 +42,31 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+# ─── Pre-Deploy Validation ────────────────────────────────────────────────────
+# Catch configuration problems before touching running containers.
+# Fail fast here rather than fail mid-deploy and leave the stack in a broken state.
+
+if [ -z "$ECR_REGISTRY" ] && [ "$1" != "--local" ] && [ "$1" != "--rollback" ]; then
+    log_error "ECR_REGISTRY not set. Either set it or pass --local to build from source."
+    exit 1
+fi
+
+# Verify critical secrets exist in SSM (warn only — don't block deploy)
+for secret in "slack_webhook_critical" "lambda_incident_url" "groq_api_key"; do
+    if ! aws ssm get-parameter --name "/observeops/production/$secret" \
+        --region "$AWS_REGION" >/dev/null 2>&1; then
+        log_warning "SSM secret '$secret' not found — some features may not work"
+    fi
+done
+
+# Verify disk space — need at least 2GB free to pull/build images
+AVAILABLE_KB=$(df /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}' || df / | awk 'NR==2 {print $4}')
+if [ -n "$AVAILABLE_KB" ] && [ "$AVAILABLE_KB" -lt 2097152 ]; then
+    log_error "Insufficient disk space. Need 2GB free, have $((AVAILABLE_KB / 1024))MB."
+    log_error "Run: sudo docker system prune -f"
+    exit 1
+fi
+
 # ─── Save Current Version for Rollback ───────────────────────────────────────
 # Before deploying, save which image is currently running
 # If the new deployment fails, we use this to roll back

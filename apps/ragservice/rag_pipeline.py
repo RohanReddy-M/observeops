@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import List, Literal, TypedDict
+
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
+
+logger = logging.getLogger(__name__)
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -41,11 +52,14 @@ class RAGPipeline:
         )
         self.vector_store: FAISS | None = None
 
-        # llama-3.1-8b-instant: free on Groq, ~200 tokens/sec, good reasoning
+        # llama-3.1-8b-instant: free on Groq, ~200 tokens/sec, good reasoning.
+        # timeout=15: if Groq doesn't respond in 15s, raise immediately rather than
+        # hanging a FastAPI worker thread. Caller handles the timeout exception.
         self.llm = ChatGroq(
             model="llama-3.1-8b-instant",
             temperature=0,
             api_key=os.getenv("GROQ_API_KEY"),
+            timeout=15,
         )
         self.graph = self._build_graph()
 
@@ -96,22 +110,46 @@ class RAGPipeline:
         """Conditional edge: branch based on relevance grade."""
         return "generate" if state["is_relevant"] else "no_context"
 
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=8),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    def _call_llm(self, prompt, context: str, query: str) -> str:
+        """
+        Isolated LLM call with retry + exponential backoff.
+        Retry on any exception (network glitch, Groq rate limit, timeout).
+        3 attempts: immediate → 2s → 4s. Total worst-case: ~21s.
+        Reraises on final failure so the no_context fallback can catch it upstream.
+        """
+        return (prompt | self.llm | StrOutputParser()).invoke(
+            {"context": context, "query": query}
+        )
+
     def _generate(self, state: GraphState) -> GraphState:
         """Call the LLM with the retrieved context to produce an answer."""
         context = "\n\n---\n\n".join(d.page_content for d in state["documents"])
         prompt = ChatPromptTemplate.from_messages([
             (
                 "system",
-                "You are an expert DevOps engineer for the ObserveOps platform. "
+                "You are an expert DevOps engineer for the ObserveOps platform running "
+                "on Docker Compose on AWS EC2. "
                 "Answer questions using ONLY the provided context about infrastructure, "
                 "incidents, and runbooks. Be concise and actionable. "
-                "If you reference a shell command, include it exactly.",
+                "All fix commands use: sudo docker compose -f /opt/observeops/docker-compose.yml ...",
             ),
             ("human", "Context:\n{context}\n\nQuestion: {query}"),
         ])
-        answer = (prompt | self.llm | StrOutputParser()).invoke(
-            {"context": context, "query": state["query"]}
-        )
+        try:
+            answer = self._call_llm(prompt, context, state["query"])
+        except Exception as exc:
+            logger.error("LLM call failed after retries: %s", exc)
+            answer = (
+                f"LLM unavailable after 3 attempts ({exc}). "
+                "Run manually: sudo docker compose -f /opt/observeops/docker-compose.yml ps"
+            )
         return {**state, "generation": answer}
 
     def _no_context(self, state: GraphState) -> GraphState:
