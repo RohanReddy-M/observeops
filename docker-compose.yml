@@ -306,9 +306,9 @@ services:
   # Receives AlertManager webhooks, queries Loki for log context,
   # calls Groq LLM for diagnosis, sends fix command to Slack.
   llm-alert-autopilot:
-    image: ghcr.io/rohanreddy-m/llm-alert-autopilot:latest
+    image: ${ECR_REGISTRY:-llm-alert-autopilot}/llm-alert-autopilot:${IMAGE_TAG:-latest}
     build:
-      context: ../llm-alert-autopilot
+      context: ./apps/llm-alert-autopilot
       dockerfile: Dockerfile
     container_name: llm-alert-autopilot
     ports:

@@ -90,6 +90,7 @@ jobs:
         run: |
           docker build -t secureship-test apps/secureship/
           docker build -t statusservice-test apps/statusservice/
+          docker build -t llm-alert-autopilot-test apps/llm-alert-autopilot/
 
   # ─── Job 2: Security Scan ───────────────────────────────────────────────────
   # Runs on every push AFTER tests pass.
@@ -327,6 +328,23 @@ jobs:
           if [ "${{ github.ref_name }}" == "main" ]; then
             docker tag "$REGISTRY/ragservice:$TAG" "$REGISTRY/ragservice:latest"
             docker push "$REGISTRY/ragservice:latest"
+          fi
+
+      # Build and push LLM Alert Autopilot
+      - name: Build and push LLM Alert Autopilot
+        env:
+          REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build \
+            --tag "$REGISTRY/llm-alert-autopilot:$TAG" \
+            --tag "$REGISTRY/llm-alert-autopilot:${{ github.ref_name }}" \
+            apps/llm-alert-autopilot/
+          docker push "$REGISTRY/llm-alert-autopilot:$TAG"
+          docker push "$REGISTRY/llm-alert-autopilot:${{ github.ref_name }}"
+          if [ "${{ github.ref_name }}" == "main" ]; then
+            docker tag "$REGISTRY/llm-alert-autopilot:$TAG" "$REGISTRY/llm-alert-autopilot:latest"
+            docker push "$REGISTRY/llm-alert-autopilot:latest"
           fi
 
   update-k8s-manifests:
