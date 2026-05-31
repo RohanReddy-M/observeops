@@ -142,3 +142,104 @@ resource "aws_ssm_parameter" "lambda_url" {
   value = aws_lambda_function_url.incident_analyzer.function_url
   tags  = var.common_tags
 }
+
+# ─── Audit Alerter ────────────────────────────────────────────────────────────
+# Triggered by EventBridge when CloudTrail records a dangerous AWS API call.
+# Posts to Slack immediately: who did it, what, when, from where.
+# No external dependencies — pure stdlib + boto3.
+
+data "archive_file" "audit_alerter" {
+  type        = "zip"
+  source_dir  = "${path.root}/../apps/lambda/audit_alerter"
+  output_path = "${path.module}/audit_alerter.zip"
+}
+
+resource "aws_iam_role" "audit_alerter" {
+  name = "${var.project_name}-audit-alerter"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = var.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "audit_alerter_logs" {
+  role       = aws_iam_role.audit_alerter.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "audit_alerter_ssm" {
+  name = "ssm-read-slack-webhook"
+  role = aws_iam_role.audit_alerter.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter"]
+      Resource = ["arn:aws:ssm:*:*:parameter/observeops/production/slack_webhook_critical"]
+    }]
+  })
+}
+
+resource "aws_lambda_function" "audit_alerter" {
+  filename         = data.archive_file.audit_alerter.output_path
+  function_name    = "${var.project_name}-audit-alerter"
+  role             = aws_iam_role.audit_alerter.arn
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.12"
+  source_code_hash = data.archive_file.audit_alerter.output_base64sha256
+  timeout          = 30
+
+  tags = var.common_tags
+}
+
+# EventBridge rule — fires on destructive or suspicious CloudTrail events.
+# CloudTrail management events flow into EventBridge automatically via the default event bus.
+# No extra CloudTrail setup required.
+resource "aws_cloudwatch_event_rule" "audit_alerts" {
+  name        = "${var.project_name}-audit-alerts"
+  description = "Fire on destructive or suspicious AWS API calls recorded by CloudTrail"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ec2", "aws.dynamodb", "aws.iam", "aws.s3"]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = [
+        # Database
+        "DeleteTable",
+        # Compute
+        "TerminateInstances", "StopInstances", "RunInstances",
+        # Networking
+        "DeleteSecurityGroup", "AuthorizeSecurityGroupIngress", "RevokeSecurityGroupIngress",
+        # IAM — highest risk category
+        "CreateAccessKey", "DeleteAccessKey",
+        "AttachUserPolicy", "AttachRolePolicy", "DetachRolePolicy", "CreateRole",
+        # Storage
+        "DeleteBucket", "PutBucketPolicy"
+      ]
+    }
+  })
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "audit_alerter" {
+  rule      = aws_cloudwatch_event_rule.audit_alerts.name
+  target_id = "AuditAlerter"
+  arn       = aws_lambda_function.audit_alerter.arn
+}
+
+resource "aws_lambda_permission" "audit_eventbridge" {
+  statement_id  = "AllowAuditEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.audit_alerter.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.audit_alerts.arn
+}
