@@ -44,6 +44,10 @@ cd /opt/observeops
 git clone https://github.com/RohanReddy-M/observeops.git .
 chown -R ubuntu:ubuntu /opt/observeops
 
+# Clone the LLM Alert Autopilot (separate repo, needed for AI diagnosis)
+git clone https://github.com/RohanReddy-M/llm-alert-autopilot.git /opt/llm-alert-autopilot
+chown -R ubuntu:ubuntu /opt/llm-alert-autopilot
+
 # ── Pull Secrets from SSM Parameter Store ────────────────────────────────────
 # NEVER hardcode secrets in user data - they appear in plain text in the
 # AWS console and in any exported AMI. Use SSM Parameter Store instead.
@@ -61,10 +65,19 @@ DYNAMODB_TABLE=$(aws ssm get-parameter \
   --query 'Parameter.Value' \
   --output text 2>/dev/null || echo "${project_name}-ships")
 
+SLACK_WEBHOOK_URL=$(aws ssm get-parameter \
+  --name "/observeops/production/slack_webhook_critical" \
+  --with-decryption \
+  --region ${aws_region} \
+  --query 'Parameter.Value' \
+  --output text 2>/dev/null || echo "")
+
 # Write the .env file that docker-compose reads at startup
 cat > /opt/observeops/.env <<EOF
 GROQ_API_KEY=$${GROQ_API_KEY}
 DYNAMODB_TABLE=$${DYNAMODB_TABLE}
+SLACK_WEBHOOK_URL=$${SLACK_WEBHOOK_URL}
+AWS_DEFAULT_REGION=${aws_region}
 EOF
 
 chmod 600 /opt/observeops/.env     # Only owner can read (secrets protection)
@@ -74,7 +87,7 @@ chown ubuntu:ubuntu /opt/observeops/.env
 # The observability services run on the other server.
 # Here we only start what serves user traffic.
 cd /opt/observeops
-sudo -u ubuntu docker compose up -d secureship statusservice ragservice nginx
+sudo -u ubuntu docker compose up -d secureship statusservice ragservice nginx llm-alert-autopilot
 
 # ── Systemd Service for Auto-Start ───────────────────────────────────────────
 # Without this, if the instance reboots, Docker starts but containers don't.
@@ -89,8 +102,8 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/observeops
-ExecStart=/usr/bin/docker compose up -d secureship statusservice ragservice nginx
-ExecStop=/usr/bin/docker compose stop secureship statusservice ragservice nginx
+ExecStart=/usr/bin/docker compose up -d secureship statusservice ragservice nginx llm-alert-autopilot
+ExecStop=/usr/bin/docker compose stop secureship statusservice ragservice nginx llm-alert-autopilot
 User=ubuntu
 Group=ubuntu
 

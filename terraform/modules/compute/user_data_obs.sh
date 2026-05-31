@@ -44,6 +44,37 @@ sed -i "s/secureship:8001/$${APP_IP}:8001/g"   /opt/observeops/monitoring/promet
 sed -i "s/statusservice:8002/$${APP_IP}:8002/g" /opt/observeops/monitoring/prometheus/prometheus.yml
 sed -i "s/ragservice:8003/$${APP_IP}:8003/g"    /opt/observeops/monitoring/prometheus/prometheus.yml
 
+# ── Inject AlertManager Config ────────────────────────────────────────────────
+# Replace placeholder URLs with real values from SSM and from Terraform variables
+SLACK_CRITICAL=$(aws ssm get-parameter \
+  --name "/observeops/production/slack_webhook_critical" \
+  --with-decryption \
+  --region ${aws_region} \
+  --query 'Parameter.Value' \
+  --output text 2>/dev/null || echo "")
+
+SLACK_WARNINGS=$(aws ssm get-parameter \
+  --name "/observeops/production/slack_webhook_warnings" \
+  --with-decryption \
+  --region ${aws_region} \
+  --query 'Parameter.Value' \
+  --output text 2>/dev/null || echo "")
+
+LAMBDA_URL=$(aws ssm get-parameter \
+  --name "/observeops/production/lambda_incident_url" \
+  --region ${aws_region} \
+  --query 'Parameter.Value' \
+  --output text 2>/dev/null || echo "http://localhost:9999/unused")
+
+[ -n "$SLACK_CRITICAL" ] && sed -i "s|__SLACK_WEBHOOK_CRITICAL__|$${SLACK_CRITICAL}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+[ -n "$SLACK_WARNINGS" ] && sed -i "s|__SLACK_WEBHOOK_WARNINGS__|$${SLACK_WARNINGS}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+sed -i "s|__LAMBDA_FUNCTION_URL__|$${LAMBDA_URL}|g"   /opt/observeops/monitoring/alertmanager/alertmanager.yml
+sed -i "s|__SLACK_WEBHOOK_CRITICAL__|http://localhost:9999/unused|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+sed -i "s|__SLACK_WEBHOOK_WARNINGS__|http://localhost:9999/unused|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+
+# LLM Autopilot runs on the app server — replace container name with real IP
+sed -i "s|http://llm-alert-autopilot:8080|http://$${APP_IP}:8080|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+
 # ── Start Monitoring Services ─────────────────────────────────────────────────
 cd /opt/observeops
 sudo -u ubuntu docker compose up -d prometheus grafana loki promtail alertmanager node-exporter
