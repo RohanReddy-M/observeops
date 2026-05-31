@@ -196,6 +196,7 @@ resource "aws_instance" "observability" {
   user_data = base64encode(templatefile("${path.module}/user_data_obs.sh", {
     project_name  = var.project_name
     app_server_ip = aws_instance.app.private_ip
+    aws_region    = var.aws_region
   }))
 
   tags = merge(var.common_tags, {
