@@ -106,7 +106,8 @@ _LOCAL_SHIPS = {
 def get_dynamodb_table():
     if not DYNAMODB_AVAILABLE or not DYNAMODB_TABLE:
         return None
-    return boto3.resource("dynamodb").Table(DYNAMODB_TABLE)
+    region = os.getenv("AWS_DEFAULT_REGION", "ap-south-1")
+    return boto3.resource("dynamodb", region_name=region).Table(DYNAMODB_TABLE)
 
 
 def db_list_ships() -> list:
