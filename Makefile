@@ -15,6 +15,7 @@
         deploy rollback \
         infra-up infra-down plan apply \
         scan lint fmt \
+        chaos chaos-ragservice chaos-statusservice \
         clean shell-secureship shell-statusservice
 
 # ─── Default target ───────────────────────────────────────────────────────────
@@ -58,6 +59,11 @@ help:
 	@echo "    make fmt                format Python (black) and Terraform (terraform fmt)"
 	@echo "    make pre-commit-install install git pre-commit hooks (run once after clone)"
 	@echo "    make pre-commit-run     run all hooks against all files"
+	@echo ""
+	@echo "  CHAOS ENGINEERING"
+	@echo "    make chaos               kill secureship, verify alert + recovery"
+	@echo "    make chaos-ragservice    kill ragservice (chaos experiment)"
+	@echo "    make chaos-statusservice kill statusservice (chaos experiment)"
 	@echo ""
 	@echo "  UTILITIES"
 	@echo "    make clean              remove containers, images, build cache"
@@ -222,3 +228,19 @@ shell-secureship:
 
 shell-statusservice:
 	docker exec -it statusservice /bin/sh
+
+# ─── Chaos Engineering ────────────────────────────────────────────────────────
+# Kill a service and verify alerting fires + service recovers automatically.
+# Run ONLY when the full stack is up (make dev-up first).
+
+chaos:
+	@echo "==> Running chaos experiment on secureship..."
+	bash scripts/chaos.sh secureship
+
+chaos-ragservice:
+	@echo "==> Running chaos experiment on ragservice..."
+	bash scripts/chaos.sh ragservice
+
+chaos-statusservice:
+	@echo "==> Running chaos experiment on statusservice..."
+	bash scripts/chaos.sh statusservice

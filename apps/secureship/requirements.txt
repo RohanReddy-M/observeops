@@ -22,3 +22,7 @@ opentelemetry-api==1.28.0
 opentelemetry-sdk==1.28.0
 opentelemetry-instrumentation-fastapi==0.49b0
 opentelemetry-exporter-otlp-proto-grpc==1.28.0
+
+# Rate limiting — prevents a single client from exhausting the API
+# Uses the API key as the rate-limit identity so each key gets its own bucket
+slowapi==0.1.9

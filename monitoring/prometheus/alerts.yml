@@ -252,3 +252,60 @@ groups:
         annotations:
           summary: "Loki log storage is down"
           description: "Loki has been unreachable for 2 minutes. Logs are not being stored. Check: docker logs loki"
+
+  # ─── SLO Breach Alerts ──────────────────────────────────────────────────────
+  # These fire when services violate their reliability contracts.
+  # They use pre-computed recording rules from slo-rules.yml for instant evaluation.
+  - name: slo_breach
+    rules:
+
+      - alert: SecureShipSLOBreach
+        # Fires when 5-minute availability drops below 99.5% for 5 minutes.
+        # Unlike HighErrorRate (fires on spikes), this fires on sustained degradation.
+        expr: slo:secureship_availability:ratio_rate5m < 0.995
+        for: 5m
+        labels:
+          severity: critical
+          slo: "true"
+        annotations:
+          summary: "SecureShip availability SLO breached ({{ $value | humanizePercentage }})"
+          description: "Availability is {{ $value | humanizePercentage }}, below 99.5% SLO target. Error budget is being consumed. Check error rate and recent deploys."
+          runbook_url: "https://github.com/RohanReddy-M/observeops/blob/main/docs/runbooks/service-down.md"
+
+      - alert: SecureShipErrorBudgetLow
+        # Fires when less than 20% of the monthly error budget remains.
+        # At this point: avoid risky deploys, investigate ongoing issues.
+        # This is the "slow burn" alert — catches gradual reliability decay.
+        expr: slo:secureship_availability:error_budget_pct < 20
+        for: 0m
+        labels:
+          severity: warning
+          slo: "true"
+        annotations:
+          summary: "SecureShip error budget below 20% ({{ $value | humanize }}% remaining)"
+          description: "Only {{ $value | humanize }}% of the 216-minute monthly error budget remains. Avoid feature deploys. Investigate error sources in Grafana → SLO Dashboard."
+
+      - alert: SecureShipBurnRateTooHigh
+        # Fires when we're consuming the error budget 14.4x faster than allowed.
+        # At this rate: 30-day budget exhausted in ~50 hours.
+        # Threshold of 14.4 comes from Google SRE Workbook multi-window burn rate model.
+        # This is the most important SLO alert — catches fast degradation before it
+        # shows up in monthly error budget calculations.
+        expr: slo:secureship_availability:burn_rate1h > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          slo: "true"
+        annotations:
+          summary: "SecureShip burn rate critical ({{ $value | humanize }}x — monthly budget in ~50h)"
+          description: "Error budget burn rate is {{ $value | humanize }}x. At this rate the monthly budget is exhausted in hours. Immediate action required."
+
+      - alert: RAGServiceSuccessSLOBreach
+        expr: slo:ragservice_success:ratio_rate5m < 0.95
+        for: 5m
+        labels:
+          severity: warning
+          slo: "true"
+        annotations:
+          summary: "RAGService query success SLO breached ({{ $value | humanizePercentage }})"
+          description: "Query success rate {{ $value | humanizePercentage }} is below 95% target. Groq API may be throttling. Check console.groq.com for quota usage."

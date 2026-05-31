@@ -146,6 +146,7 @@ services:
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./monitoring/prometheus/slo-rules.yml:/etc/prometheus/slo-rules.yml:ro
       - prometheus_data:/prometheus    # Named volume persists data between restarts
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'

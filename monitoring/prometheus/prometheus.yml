@@ -23,6 +23,7 @@ global:
 # Prometheus loads these files and evaluates rules every evaluation_interval
 rule_files:
   - "/etc/prometheus/alerts.yml"
+  - "/etc/prometheus/slo-rules.yml"
 
 # ─── AlertManager Integration ─────────────────────────────────────────────────
 # When an alert rule fires, Prometheus sends it to AlertManager
