@@ -37,19 +37,11 @@ route:
 
   # ─── Sub-routes ─────────────────────────────────────────────────────────────
   routes:
-    # All firing alerts go through the LLM Alert Autopilot (containerised, always-on)
-    - match:
-        alertstate: firing
-      receiver: 'llm-autopilot'
-      continue: true          # keep matching routes below after this
+    # All alerts go through LLM Alert Autopilot first for AI diagnosis
+    - receiver: 'llm-autopilot'
+      continue: true
 
-    # All firing alerts also go through the Lambda incident analyzer (serverless, production)
-    - match:
-        alertstate: firing
-      receiver: 'lambda-incident-analyzer'
-      continue: true          # After Lambda, keep matching other routes below
-
-    # Critical alerts also go to Slack critical channel
+    # Critical alerts go to Slack critical channel
     - match:
         severity: critical
       receiver: 'slack-critical'
