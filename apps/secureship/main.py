@@ -194,9 +194,41 @@ async def metrics():
 
 # v1 API
 @app.get("/api/v1/ships", dependencies=[Depends(verify_api_key)])
-async def list_ships():
-    ships = db_list_ships()
-    return {"ships": ships, "total": len(ships), "timestamp": datetime.utcnow().isoformat()}
+async def list_ships(
+    limit: int = 20,
+    offset: int = 0,
+    status: Optional[str] = None,
+):
+    """
+    List ships with pagination.
+    - limit: max records to return (1-100, default 20)
+    - offset: records to skip for pagination (default 0)
+    - status: filter by status (active|docked|transit)
+    """
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+    all_ships = db_list_ships()
+
+    if status:
+        valid_statuses = {"active", "docked", "transit"}
+        if status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"status must be one of {valid_statuses}")
+        all_ships = [s for s in all_ships if s.get("status") == status]
+
+    total = len(all_ships)
+    page = all_ships[offset : offset + limit]
+
+    return {
+        "ships": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": (offset + limit) < total,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 @app.get("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])

@@ -59,3 +59,9 @@ variable "obs_instance_type" {
   type        = string
   default     = "t3.small"
 }
+
+variable "alert_email" {
+  description = "Email address to receive AWS Budget alerts"
+  type        = string
+  default     = "machireddy23@gmail.com"
+}

@@ -207,6 +207,36 @@ module "dynamodb" {
   common_tags  = local.common_tags
 }
 
+# ─── AWS Budget Alert ─────────────────────────────────────────────────────────
+# Fires an email when monthly spend approaches ₹800 (~$10).
+# Prevents surprise bills — t3.micro + NAT Gateway + data transfer can add up.
+# This is FinOps thinking: own your cloud spend, don't just react to the bill.
+resource "aws_budgets_budget" "monthly" {
+  name         = "${var.project_name}-monthly-budget"
+  budget_type  = "COST"
+  limit_amount = "10"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  # Warn at 80% of budget
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  # Alert when forecast exceeds budget (catch runaway spend early)
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "FORECASTED"
+    subscriber_email_addresses = [var.alert_email]
+  }
+}
+
 # ─── ECR Lifecycle Policy ────────────────────────────────────────────────────
 locals {
   ecr_lifecycle_policy = jsonencode({

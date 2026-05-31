@@ -183,6 +183,13 @@ def ingest(request: IngestRequest):
     Use this to load runbooks, post-mortems, architecture docs, or
     any text you want the AI to be able to answer questions about.
     """
+    if not request.texts:
+        raise HTTPException(status_code=400, detail="texts list cannot be empty")
+    if any(not t or not t.strip() for t in request.texts):
+        raise HTTPException(status_code=400, detail="texts list contains empty strings")
+    if len(request.texts) > 100:
+        raise HTTPException(status_code=400, detail="maximum 100 texts per request")
+
     try:
         count = pipeline.ingest(request.texts, request.metadatas)
         vector_store_documents.inc(count)
@@ -201,6 +208,11 @@ def query(request: QueryRequest):
     The pipeline: embed question → FAISS similarity search → grade relevance
     → generate answer with Groq LLM → return answer + sources.
     """
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="question cannot be empty")
+    if len(request.question) > 1000:
+        raise HTTPException(status_code=400, detail="question exceeds 1000 character limit")
+
     model = "llama-3.1-8b-instant"
     start = time.time()
     try:
