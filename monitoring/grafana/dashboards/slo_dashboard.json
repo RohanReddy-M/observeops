@@ -1,0 +1,411 @@
+{
+  "title": "ObserveOps — SLO & Error Budget",
+  "uid": "observeops-slo",
+  "description": "Service Level Objectives, error budgets, and burn rates for all ObserveOps services",
+  "tags": ["observeops", "slo", "reliability"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "panels": [
+
+    {
+      "id": 100,
+      "title": "SecureShip — Service Level Objectives",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 1,
+      "title": "Availability (5m)",
+      "description": "SLO target: 99.5%. Measures fraction of non-5xx requests over the last 5 minutes.",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "slo:secureship_availability:ratio_rate5m * 100",
+        "legendFormat": "Availability"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0 },
+              { "color": "yellow", "value": 98 },
+              { "color": "green",  "value": 99.5 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 2,
+      "title": "Error Budget Remaining",
+      "description": "SLO: 99.5%. Budget = 0.5% of 30 days = 216 minutes. Shows how much of that budget is left. Below 20% = stop feature deploys.",
+      "type": "gauge",
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "slo:secureship_availability:error_budget_pct",
+        "legendFormat": "Budget Remaining"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0 },
+              { "color": "yellow", "value": 20 },
+              { "color": "green",  "value": 50 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 3,
+      "title": "Burn Rate (1h)",
+      "description": "How fast error budget is being consumed vs the allowed pace. 1x = normal. >14.4x = monthly budget exhausted in ~50 hours → page immediately.",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "slo:secureship_availability:burn_rate1h",
+        "legendFormat": "Burn Rate"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 6 },
+              { "color": "red",    "value": 14.4 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 4,
+      "title": "p99 Latency (5m)",
+      "description": "SLO target: <500ms. 99th percentile latency — 1 in 100 requests exceeds this value.",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "slo:secureship_p99_latency:seconds_rate5m * 1000",
+        "legendFormat": "p99 Latency"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": 0 },
+              { "color": "yellow", "value": 250 },
+              { "color": "red",    "value": 500 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 200,
+      "title": "RAGService — Service Level Objectives",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 5,
+      "title": "Query Success Rate (5m)",
+      "description": "SLO target: >95%. Measures fraction of LLM queries that succeed (no Groq error).",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 7, "w": 8, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "slo:ragservice_success:ratio_rate5m * 100",
+        "legendFormat": "Success Rate"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0 },
+              { "color": "yellow", "value": 90 },
+              { "color": "green",  "value": 95 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 6,
+      "title": "Grounded Response Rate (5m)",
+      "description": "Model quality SLO: >50% of answers must be grounded in retrieved context. Below 50% = knowledge base is too sparse, add runbooks via POST /ingest.",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 7, "w": 8, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "slo:ragservice_grounded:ratio_rate5m * 100",
+        "legendFormat": "Grounded Rate"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0 },
+              { "color": "yellow", "value": 35 },
+              { "color": "green",  "value": 50 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 7,
+      "title": "Circuit Breaker State",
+      "description": "Shows Groq circuit breaker health. 1 = closed (healthy), 0 = open (Groq is failing, fast-failing all requests).",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 7, "w": 8, "h": 5 },
+      "targets": [{
+        "datasource": { "type": "prometheus" },
+        "expr": "up{job=\"ragservice\"}",
+        "legendFormat": "RAGService Up"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "DOWN",    "color": "red",   "index": 0 },
+                "1": { "text": "HEALTHY", "color": "green", "index": 1 }
+              }
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": 300,
+      "title": "Trends",
+      "type": "row",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 8,
+      "title": "SecureShip — Availability Over Time",
+      "description": "5-minute rolling availability. Red zone = below 99.5% SLO. Watch for drops after deploys.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "slo:secureship_availability:ratio_rate5m * 100",
+          "legendFormat": "Availability %"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "vector(99.5)",
+          "legendFormat": "SLO Target (99.5%)"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 95,
+          "max": 100,
+          "custom": { "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",   "value": 0 },
+              { "color": "green", "value": 99.5 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "SLO Target (99.5%)" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+            ]
+          }
+        ]
+      }
+    },
+
+    {
+      "id": 9,
+      "title": "SecureShip — Burn Rate Over Time",
+      "description": "Error budget burn rate. >14.4 = page immediately. >1 = consuming budget faster than allowed.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "slo:secureship_availability:burn_rate1h",
+          "legendFormat": "Burn Rate (1h)"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "vector(14.4)",
+          "legendFormat": "Page Threshold (14.4x)"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "vector(1)",
+          "legendFormat": "Normal Rate (1x)"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Page Threshold (14.4x)" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Normal Rate (1x)" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [4, 4] } },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+            ]
+          }
+        ]
+      }
+    },
+
+    {
+      "id": 10,
+      "title": "RAGService — Success & Grounded Rate Over Time",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 21, "w": 24, "h": 7 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "slo:ragservice_success:ratio_rate5m * 100",
+          "legendFormat": "Query Success Rate"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "slo:ragservice_grounded:ratio_rate5m * 100",
+          "legendFormat": "Grounded Response Rate"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "vector(95)",
+          "legendFormat": "Success SLO (95%)"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "expr": "vector(50)",
+          "legendFormat": "Grounded SLO (50%)"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*SLO.*" },
+            "properties": [
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }
+            ]
+          }
+        ]
+      }
+    }
+
+  ]
+}

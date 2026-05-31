@@ -4,6 +4,7 @@ import logging
 import os
 from typing import List, Literal, TypedDict
 
+import pybreaker
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -13,6 +14,22 @@ from tenacity import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Circuit breaker for the Groq API.
+# Opens after 5 consecutive failures — subsequent calls fail immediately
+# instead of queuing up retries and keeping FastAPI workers blocked.
+# Resets after 60 seconds: one probe request goes through; if it succeeds,
+# the circuit closes. This is the "half-open" state.
+#
+# Why this matters: if Groq is down for 5 minutes, without a circuit breaker
+# every single RAG query would wait 15s (timeout) × 3 retries = 45s before
+# failing. With the circuit breaker open, they fail in <1ms.
+_groq_breaker = pybreaker.CircuitBreaker(
+    fail_max=5,
+    reset_timeout=60,
+    name="groq-api",
+    exclude=[],
+)
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -143,7 +160,16 @@ class RAGPipeline:
             ("human", "Context:\n{context}\n\nQuestion: {query}"),
         ])
         try:
-            answer = self._call_llm(prompt, context, state["query"])
+            answer = _groq_breaker.call(self._call_llm, prompt, context, state["query"])
+        except pybreaker.CircuitBreakerError:
+            # Circuit is open — Groq has failed 5+ times in 60s.
+            # Fail fast: tell the caller and let the circuit recover.
+            logger.warning("Groq circuit breaker open — returning degraded response")
+            answer = (
+                "AI assistant temporarily unavailable — Groq API circuit breaker is open "
+                "(5 consecutive failures). Retrying automatically in 60 seconds. "
+                "Check Groq quota at console.groq.com or run: docker logs ragservice"
+            )
         except Exception as exc:
             logger.error("LLM call failed after retries: %s", exc)
             answer = (

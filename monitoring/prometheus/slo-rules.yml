@@ -1,0 +1,79 @@
+# ─── SLO Recording Rules ──────────────────────────────────────────────────────
+# Recording rules pre-compute expensive PromQL expressions so dashboards and
+# alert rules load instantly instead of recomputing from raw data each time.
+#
+# SLO definitions:
+#   SecureShip availability:    99.5%  (error budget: 216 min/month)
+#   SecureShip p99 latency:     <500ms
+#   RAGService success rate:    95%
+#   RAGService grounded rate:   50%  (model quality SLO)
+#
+# Naming convention: slo:<service>:<metric>:<window>
+
+groups:
+  - name: slo_recording_rules
+    interval: 30s
+    rules:
+
+      # ── SecureShip: availability ─────────────────────────────────────────────
+      # "Good request" = any non-5xx response (4xx is bad client, not our fault)
+
+      - record: slo:secureship_availability:ratio_rate5m
+        expr: |
+          sum(rate(http_requests_total{job="secureship",status_code!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="secureship"}[5m]))
+
+      # 30-day window for error budget calculation
+      # WARNING: this is expensive at high cardinality — acceptable on t3.micro
+      - record: slo:secureship_availability:ratio_rate30d
+        expr: |
+          sum(rate(http_requests_total{job="secureship",status_code!~"5.."}[30d]))
+          /
+          sum(rate(http_requests_total{job="secureship"}[30d]))
+
+      # ── SecureShip: error budget remaining (%) ───────────────────────────────
+      # SLO = 99.5%  →  error budget = 0.5% = 0.005
+      # Budget remaining = how much of that 0.005 we haven't consumed yet.
+      #   100% = untouched budget.  0% = exactly at SLO.  <0% = SLO breached.
+      - record: slo:secureship_availability:error_budget_pct
+        expr: |
+          (0.005 - (1 - slo:secureship_availability:ratio_rate30d))
+          / 0.005
+          * 100
+
+      # ── SecureShip: latency ──────────────────────────────────────────────────
+      - record: slo:secureship_p99_latency:seconds_rate5m
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="secureship"}[5m]))
+            by (le)
+          )
+
+      # ── SecureShip: burn rate (1-hour window) ────────────────────────────────
+      # Burn rate = current error rate / allowed error rate.
+      # Burn rate = 1   → consuming budget at exactly the allowed pace.
+      # Burn rate = 14.4 → will exhaust the entire monthly budget in ~50 hours
+      #                    (the Google SRE page-immediately threshold).
+      # Formula: (1 - availability_1h) / (1 - slo_target)
+      - record: slo:secureship_availability:burn_rate1h
+        expr: |
+          (1 - sum(rate(http_requests_total{job="secureship",status_code!~"5.."}[1h]))
+               / sum(rate(http_requests_total{job="secureship"}[1h])))
+          / 0.005
+
+      # ── RAGService: query success rate ───────────────────────────────────────
+      - record: slo:ragservice_success:ratio_rate5m
+        expr: |
+          sum(rate(llm_requests_total{job="ragservice",status="success"}[5m]))
+          /
+          sum(rate(llm_requests_total{job="ragservice"}[5m]))
+
+      # ── RAGService: grounded response rate ───────────────────────────────────
+      # Model quality SLO: >50% of answers must be grounded in retrieved context.
+      # Below 50% = knowledge base too sparse → ingest more runbooks.
+      - record: slo:ragservice_grounded:ratio_rate5m
+        expr: |
+          sum(rate(rag_queries_total{job="ragservice",grounded="true"}[5m]))
+          /
+          sum(rate(rag_queries_total{job="ragservice"}[5m]))

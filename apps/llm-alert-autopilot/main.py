@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 from typing import Any
@@ -81,9 +82,6 @@ def _fetch_loki_logs(service: str) -> list[str]:
     except Exception as exc:
         logger.warning("Loki query failed for service=%s: %s", service, exc)
         return []
-
-
-import urllib.parse
 
 
 def _service_from_alert(labels: dict) -> str:

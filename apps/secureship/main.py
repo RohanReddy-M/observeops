@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -71,6 +73,18 @@ APP_INFO.labels(
 
 app = FastAPI(title="SecureShip API", version="1.0.0")
 FastAPIInstrumentor.instrument_app(app)
+
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+# Rate-limit by API key so each caller gets its own independent bucket.
+# Without this, one bad client can saturate the service and starve legitimate traffic.
+# This is the application-layer defense. ALB + WAF handle the network layer in AWS.
+def _rate_limit_key(request: Request) -> str:
+    key = request.headers.get("X-API-Key")
+    return key if key else (request.client.host if request.client else "unknown")
+
+limiter = Limiter(key_func=_rate_limit_key)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 # Set API_KEY env var to enable key-based auth. Empty = open mode (local dev).
@@ -194,7 +208,9 @@ async def metrics():
 
 # v1 API
 @app.get("/api/v1/ships", dependencies=[Depends(verify_api_key)])
+@limiter.limit("100/minute")
 async def list_ships(
+    request: Request,
     limit: int = 20,
     offset: int = 0,
     status: Optional[str] = None,
@@ -232,7 +248,8 @@ async def list_ships(
 
 
 @app.get("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
-async def get_ship(ship_id: str):
+@limiter.limit("100/minute")
+async def get_ship(request: Request, ship_id: str):
     ship = db_get_ship(ship_id)
     if not ship:
         raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")
@@ -240,7 +257,8 @@ async def get_ship(ship_id: str):
 
 
 @app.post("/api/v1/ships", dependencies=[Depends(verify_api_key)])
-async def create_ship(ship: ShipCreate):
+@limiter.limit("30/minute")
+async def create_ship(request: Request, ship: ShipCreate):
     saved = db_put_ship(ship.model_dump())
     logger.info("ship_created", extra={"ship_id": saved["ship_id"]})
     return {"message": "Ship created", "ship": saved, "timestamp": datetime.utcnow().isoformat()}
