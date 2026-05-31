@@ -76,27 +76,34 @@ help:
 
 dev-up:
 	@echo "==> Checking prerequisites..."
-	@[ -f .env ] || (cp .env.example .env && echo "  .env created from .env.example — add your GROQ_API_KEY")
+	@[ -f .env ] || (cp .env.example .env && echo "  .env created — fill in GROQ_API_KEY from console.groq.com")
 	@docker info > /dev/null 2>&1 || (echo "ERROR: Docker is not running" && exit 1)
-	@echo "==> Starting monitoring stack first (Prometheus, Grafana, Loki)..."
-	docker compose up -d prometheus grafana loki alertmanager node-exporter
-	@echo "==> Waiting 5s for monitoring to initialize..."
-	@sleep 5
+	@echo "==> Starting monitoring + tracing stack..."
+	docker compose up -d prometheus grafana loki alertmanager node-exporter tempo otel-collector
+	@echo "==> Waiting 8s for monitoring to initialize..."
+	@sleep 8
 	@echo "==> Starting application services..."
 	docker compose up -d secureship statusservice ragservice
-	@echo "==> Waiting for services to be healthy..."
+	@echo "==> Waiting 5s for app services to initialize..."
 	@sleep 5
-	@echo "==> Starting nginx (after all upstreams are ready)..."
-	docker compose up -d nginx promtail
+	@echo "==> Starting AI alert autopilot + nginx..."
+	docker compose up -d llm-alert-autopilot nginx promtail
 	@echo ""
-	@echo "  Services running:"
-	@echo "    SecureShip API:  http://localhost:8001/docs"
-	@echo "    StatusService:   http://localhost:8002"
-	@echo "    RAGService:      http://localhost:8003/docs"
-	@echo "    Grafana:         http://localhost:3000  (admin / observeops123)"
-	@echo "    Prometheus:      http://localhost:9090"
-	@echo "    AlertManager:    http://localhost:9093"
-	@echo "    Via Nginx:       http://localhost"
+	@echo "  ✓ Stack running:"
+	@echo "    SecureShip API:       http://localhost:8001/docs"
+	@echo "    StatusService:        http://localhost:8002"
+	@echo "    RAGService:           http://localhost:8003/docs"
+	@echo "    LLM Alert Autopilot:  http://localhost:8080/health"
+	@echo "    Grafana:              http://localhost:3000  (admin / observeops123)"
+	@echo "    Prometheus:           http://localhost:9090"
+	@echo "    AlertManager:         http://localhost:9093"
+	@echo "    Via Nginx:            http://localhost"
+	@echo ""
+	@echo "  Dashboards:"
+	@echo "    Services Overview:    http://localhost:3000/d/observeops-services"
+	@echo "    SLO + Error Budget:   http://localhost:3000/d/observeops-slo"
+	@echo "    DORA Metrics:         http://localhost:3000/d/observeops-dora"
+	@echo "    LLM Metrics:          http://localhost:3000/d/observeops-llm"
 	@echo ""
 
 dev-down:
@@ -113,11 +120,16 @@ status:
 	@docker compose ps
 	@echo ""
 	@echo "==> Endpoint status:"
-	@curl -sf http://localhost:8001/health > /dev/null && echo "  SecureShip:   healthy" || echo "  SecureShip:   UNREACHABLE"
-	@curl -sf http://localhost:8002/health > /dev/null && echo "  StatusService:healthy" || echo "  StatusService:UNREACHABLE"
-	@curl -sf http://localhost:8003/health > /dev/null && echo "  RAGService:   healthy" || echo "  RAGService:   UNREACHABLE"
-	@curl -sf http://localhost:9090/-/healthy > /dev/null && echo "  Prometheus:   healthy" || echo "  Prometheus:   UNREACHABLE"
-	@curl -sf http://localhost:3000/api/health > /dev/null && echo "  Grafana:      healthy" || echo "  Grafana:      UNREACHABLE"
+	@curl -sf http://localhost:8001/health > /dev/null && echo "  SecureShip:          healthy" || echo "  SecureShip:          UNREACHABLE"
+	@curl -sf http://localhost:8002/health > /dev/null && echo "  StatusService:       healthy" || echo "  StatusService:       UNREACHABLE"
+	@curl -sf http://localhost:8003/health > /dev/null && echo "  RAGService:          healthy" || echo "  RAGService:          UNREACHABLE"
+	@curl -sf http://localhost:8080/health > /dev/null && echo "  LLM Alert Autopilot: healthy" || echo "  LLM Alert Autopilot: UNREACHABLE"
+	@curl -sf http://localhost:9090/-/healthy > /dev/null && echo "  Prometheus:          healthy" || echo "  Prometheus:          UNREACHABLE"
+	@curl -sf http://localhost:3000/api/health > /dev/null && echo "  Grafana:             healthy" || echo "  Grafana:             UNREACHABLE"
+	@curl -sf http://localhost:9093/-/healthy > /dev/null && echo "  AlertManager:        healthy" || echo "  AlertManager:        UNREACHABLE"
+	@echo ""
+	@echo "==> RAGService knowledge base:"
+	@curl -sf http://localhost:8003/health 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print('  FAISS index: ' + str(d.get('vector_store_docs','?')) + ' docs — ' + d.get('knowledge_base_state','unknown'))" 2>/dev/null || echo "  RAGService unreachable"
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
 
@@ -147,7 +159,7 @@ test-ragservice:
 
 build:
 	@echo "==> Building all images..."
-	docker compose build secureship statusservice ragservice
+	docker compose build secureship statusservice ragservice llm-alert-autopilot
 
 # ─── Security Scan ────────────────────────────────────────────────────────────
 
