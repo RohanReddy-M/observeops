@@ -62,8 +62,10 @@ help:
 	@echo ""
 	@echo "  CHAOS ENGINEERING"
 	@echo "    make chaos               kill secureship, verify alert + recovery"
-	@echo "    make chaos-ragservice    kill ragservice (chaos experiment)"
-	@echo "    make chaos-statusservice kill statusservice (chaos experiment)"
+	@echo "    make chaos-ragservice    kill ragservice, verify including FAISS index"
+	@echo "    make chaos-oom           simulate OOM kill on ragservice"
+	@echo "    make chaos-depkill       kill loki (dependency failure test)"
+	@echo "    (all chaos runs generate a postmortem pre-fill in docs/postmortems/)"
 	@echo ""
 	@echo "  UTILITIES"
 	@echo "    make clean              remove containers, images, build cache"
@@ -234,13 +236,17 @@ shell-statusservice:
 # Run ONLY when the full stack is up (make dev-up first).
 
 chaos:
-	@echo "==> Running chaos experiment on secureship..."
+	@echo "==> Chaos: kill secureship, verify alert + API recovery..."
 	bash scripts/chaos.sh secureship
 
 chaos-ragservice:
-	@echo "==> Running chaos experiment on ragservice..."
+	@echo "==> Chaos: kill ragservice, verify alert + FAISS index recovery..."
 	bash scripts/chaos.sh ragservice
 
-chaos-statusservice:
-	@echo "==> Running chaos experiment on statusservice..."
-	bash scripts/chaos.sh statusservice
+chaos-oom:
+	@echo "==> Chaos: simulate OOM kill on ragservice..."
+	bash scripts/chaos.sh ragservice --scenario=oom
+
+chaos-depkill:
+	@echo "==> Chaos: kill loki (dependency failure test)..."
+	bash scripts/chaos.sh loki --scenario=depkill
