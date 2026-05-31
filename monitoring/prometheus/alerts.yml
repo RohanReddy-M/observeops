@@ -237,6 +237,23 @@ groups:
           summary: "RAGService is down"
           description: "The AI incident assistant is unreachable. Check: docker logs ragservice"
 
+      - alert: RAGIndexEmpty
+        # Fires when RAGService is UP but has zero documents in its FAISS index.
+        # This is a "zombie recovery" state — the service appears healthy but
+        # cannot answer any questions. Discovered during chaos experiment 2026-05-31.
+        # Root cause: FAISS is in-memory only and is lost on every container restart.
+        # Fix: re-deploy (auto-ingest runs) or POST runbooks to /ingest manually.
+        expr: |
+          up{job="ragservice"} == 1
+          and
+          vector_store_documents_total == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAGService is up but knowledge base is empty (0 documents)"
+          description: "RAGService is running but the FAISS index has no documents. All queries will return 'I don't have enough context'. Fix: sudo docker compose -f /opt/observeops/docker-compose.yml restart ragservice (auto-ingest will repopulate)"
+
   # ─── No Logs Alert ─────────────────────────────────────────────────────────
   - name: observability
     rules:
