@@ -140,6 +140,34 @@ docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps statusservice
 log_info "Deploying RAGService..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps ragservice
 
+log_info "Waiting for RAGService to be healthy..."
+for i in $(seq 1 12); do
+    if curl -sf http://localhost:8003/health > /dev/null 2>&1; then
+        log_info "RAGService is healthy ✓"
+        break
+    fi
+    log_warning "Health check failed ($i/12), waiting..."
+    sleep 5
+done
+
+log_info "Ingesting runbooks into RAGService vector store..."
+INGESTED=0
+for f in "$APP_DIR/docs/runbooks"/*.md; do
+    [ -f "$f" ] || continue
+    content=$(cat "$f")
+    fname=$(basename "$f")
+    result=$(echo "$content" | python3 -c "
+import sys, json, urllib.request
+content = sys.stdin.read()
+data = json.dumps({'texts': [content], 'metadatas': [{'source': '${fname}', 'type': 'runbook'}]}).encode()
+req = urllib.request.Request('http://localhost:8003/ingest', data=data, headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=10)
+print(json.loads(resp.read()).get('chunks_created', 0))
+" 2>/dev/null || echo "0")
+    INGESTED=$((INGESTED + result))
+done
+log_info "Ingested ${INGESTED} chunks from runbooks into RAGService ✓"
+
 log_info "Injecting obs server IP into nginx config..."
 OBS_IP=$(aws ssm get-parameter \
     --name "/observeops/production/obs_server_ip" \
@@ -207,10 +235,13 @@ else
     log_warning "Slack warnings webhook not in SSM — #alerts-warnings will not receive messages"
 fi
 
-log_info "Starting monitoring stack..."
-docker compose -f "$APP_DIR/docker-compose.yml" up -d prometheus grafana loki promtail alertmanager node-exporter
+log_info "Starting app-server-only monitoring services..."
+# Prometheus, Grafana, Loki, AlertManager run on the OBS SERVER — not here.
+# The app server only runs: OTel Collector (receives traces, forwards to Tempo on obs server)
+# and LLM Alert Autopilot (receives AlertManager webhooks, calls Groq, posts to Slack).
+docker compose -f "$APP_DIR/docker-compose.yml" up -d otel-collector llm-alert-autopilot
 
-# nginx resolves upstream hostnames at startup — start it after monitoring containers
+# nginx resolves upstream hostnames at startup — start it after app containers
 # are registered in Docker DNS to prevent "host not found" crash loop.
 sleep 3
 log_info "Starting nginx..."
@@ -239,9 +270,7 @@ check_endpoint "http://localhost/health"          "SecureShip (via Nginx)"
 check_endpoint "http://localhost:8001/health"     "SecureShip (direct)"
 check_endpoint "http://localhost:8002/health"     "StatusService"
 check_endpoint "http://localhost:8003/health"     "RAGService"
-check_endpoint "http://localhost:9090/-/healthy"  "Prometheus"
-check_endpoint "http://localhost:3000/api/health" "Grafana"
-check_endpoint "http://localhost:3100/ready"      "Loki"
+check_endpoint "http://localhost:8080/health"     "LLM Alert Autopilot"
 
 if [ "$SMOKE_TESTS_PASSED" = false ]; then
     log_error "Smoke tests failed! Initiating rollback..."
@@ -255,12 +284,15 @@ echo "════════════════════════�
 log_info "Deployment successful! ✓"
 echo "═══════════════════════════════════════════"
 echo ""
-echo "Services:"
-echo "  SecureShip API:  http://localhost:8001"
-echo "  StatusService:   http://localhost:8002"
-echo "  RAGService:      http://localhost:8003"
-echo "  Grafana:         http://localhost:3000  (admin/observeops123)"
-echo "  Prometheus:      http://localhost:9090"
+echo "App Server Services:"
+echo "  SecureShip API:      http://localhost:8001"
+echo "  StatusService:       http://localhost:8002"
+echo "  RAGService:          http://localhost:8003"
+echo "  LLM Alert Autopilot: http://localhost:8080"
+echo ""
+echo "Monitoring (on obs server — access via secureship.click):"
+echo "  Grafana:    https://secureship.click/grafana/"
+echo "  Prometheus: https://secureship.click/prometheus/"
 echo ""
 
 # Log deployment event (useful for correlating incidents with deployments)
