@@ -1,16 +1,27 @@
 """
 LLM Alert Autopilot
 ===================
-Receives AlertManager webhooks.
-For each firing alert:
-  1. Queries Loki for recent error logs from the affected service.
-  2. Sends (alert metadata + log lines) to Groq LLM for diagnosis.
-  3. Posts the diagnosis to Slack with the suggested fix command.
+Receives AlertManager webhooks. For each firing alert:
+  1. Fetches recent deploy history (so LLM knows if this correlates with a deploy)
+  2. Queries Loki for recent error logs from the affected service
+  3. Sends (alert + deploy context + logs) to Groq LLM for diagnosis
+  4. Posts diagnosis + suggested fix to Slack
 
-Exposed endpoints:
-  POST /webhook  — AlertManager webhook receiver
-  GET  /health   — liveness probe
-  GET  /metrics  — Prometheus metrics
+Also tracks DORA metrics:
+  - deployments_total: incremented by deploy.sh via POST /deploy-event
+  - alert_mttr_seconds: calculated from AlertManager resolved-alert timestamps
+
+Why deploy context matters:
+  The most common root cause of incidents is "someone deployed something recently."
+  A raw alert without deploy context forces the on-call to manually check git log.
+  With deploy context in the LLM prompt, the diagnosis includes: "This error rate spike
+  started 8 minutes after commit abc1234 by Rohan — likely a regression."
+
+Endpoints:
+  POST /webhook       — AlertManager firing/resolved webhook receiver
+  POST /deploy-event  — Called by deploy.sh to register a deployment
+  GET  /health        — Liveness probe
+  GET  /metrics       — Prometheus metrics (autopilot + DORA)
 """
 
 from __future__ import annotations
@@ -22,12 +33,14 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.responses import JSONResponse
 from groq import Groq
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from pydantic import BaseModel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,35 +48,61 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="LLM Alert Autopilot", version="1.0.0")
+app = FastAPI(title="LLM Alert Autopilot", version="2.0.0")
 
 # ─── Config ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY     = os.environ["GROQ_API_KEY"]
-SLACK_WEBHOOK    = os.getenv("SLACK_WEBHOOK_URL", "")
-LOKI_URL         = os.getenv("LOKI_URL", "http://loki:3100")
-LLM_MODEL        = "llama-3.1-8b-instant"
-LOG_LINES        = 30       # how many recent log lines to fetch per alert
-LOKI_LOOKBACK    = "5m"     # how far back to search for logs
-LLM_TIMEOUT      = 15       # seconds
+GROQ_API_KEY  = os.environ["GROQ_API_KEY"]
+SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL", "")
+LOKI_URL      = os.getenv("LOKI_URL", "http://loki:3100")
+GRAFANA_URL   = os.getenv("GRAFANA_URL", "http://grafana:3000")
+GRAFANA_PASS  = os.getenv("GRAFANA_PASSWORD", "observeops123")
+LLM_MODEL     = "llama-3.1-8b-instant"
+LOG_LINES     = 30
+LOKI_LOOKBACK = "5m"
+LLM_TIMEOUT   = 15
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# ─── In-memory deploy history (max 10, survives until container restart) ────
+# Populated by POST /deploy-event from deploy.sh.
+# Used to give the LLM context about recent changes.
+_recent_deploys: list[dict] = []
+
 # ─── Prometheus Metrics ───────────────────────────────────────────────────────
-alerts_received   = Counter("autopilot_alerts_received_total",   "Total AlertManager webhooks received",   ["alertname"])
-alerts_diagnosed  = Counter("autopilot_alerts_diagnosed_total",  "Alerts successfully diagnosed by LLM",   ["alertname"])
-diagnosis_errors  = Counter("autopilot_diagnosis_errors_total",  "Errors during diagnosis",                ["stage"])
+
+# Autopilot operational metrics
+alerts_received   = Counter("autopilot_alerts_received_total",   "AlertManager webhooks received",        ["alertname", "status"])
+alerts_diagnosed  = Counter("autopilot_alerts_diagnosed_total",  "Alerts successfully diagnosed by LLM",  ["alertname"])
+diagnosis_errors  = Counter("autopilot_diagnosis_errors_total",  "Errors during diagnosis",               ["stage"])
 diagnosis_latency = Histogram("autopilot_diagnosis_latency_seconds", "End-to-end diagnosis latency",
                               buckets=[0.5, 1, 2, 5, 10, 20, 30])
 
-# ─── Loki helpers ─────────────────────────────────────────────────────────────
+# DORA metrics
+# These give you the language to talk about engineering performance, not just system health.
+deployments_total           = Counter("deployments_total", "Total production deployments", ["commit", "status"])
+last_deployment_timestamp   = Gauge("last_deployment_timestamp_seconds", "Unix timestamp of the most recent deployment")
+alert_mttr_seconds          = Histogram(
+    "alert_mttr_seconds",
+    "Alert mean time to recovery — time from alert firing to alert resolving",
+    ["alertname"],
+    buckets=[30, 60, 120, 300, 600, 1800, 3600, 7200],
+)
+
+
+# ─── Deploy event model ───────────────────────────────────────────────────────
+
+class DeployEvent(BaseModel):
+    commit: str
+    deployer: str = "ci"
+    status: str = "success"   # success | rollback | failed
+    services: list[str] = []
+
+
+# ─── Loki log fetching ────────────────────────────────────────────────────────
 
 def _fetch_loki_logs(service: str) -> list[str]:
-    """
-    Query Loki for recent error-level logs from a service.
-    Returns a list of log line strings (empty list on failure).
-    LogQL: {job="<service>"} |~ "(?i)(error|exception|traceback|critical)"
-    """
-    query = f'{{job="{service}"}} |~ "(?i)(error|exception|traceback|critical)"'
+    """Fetch recent error-level logs from Loki for a service."""
+    query = f'{{job="{service}"}} |~ "(?i)(error|exception|traceback|critical|oom|killed)"'
     params = urllib.parse.urlencode({
         "query": query,
         "limit": LOG_LINES,
@@ -84,44 +123,77 @@ def _fetch_loki_logs(service: str) -> list[str]:
         return []
 
 
+# ─── Deploy context ───────────────────────────────────────────────────────────
+
+def _build_deploy_context() -> str:
+    """
+    Return a plain-text summary of recent deployments for the LLM prompt.
+    Includes: commit SHA, deployer, time elapsed, and deploy status.
+    This is the key insight that lets the LLM say "this alert started 8 minutes
+    after commit abc1234 was deployed by Rohan."
+    """
+    if not _recent_deploys:
+        return "(no deployments recorded since autopilot started)"
+
+    now = time.time()
+    lines = []
+    for d in _recent_deploys[:5]:
+        elapsed = int(now - d.get("timestamp_unix", now))
+        if elapsed < 60:
+            when = f"{elapsed}s ago"
+        elif elapsed < 3600:
+            when = f"{elapsed // 60}m ago"
+        else:
+            when = f"{elapsed // 3600}h ago"
+
+        line = (
+            f"- commit {d['commit'][:12]} by {d['deployer']} "
+            f"({when}, status={d['status']})"
+        )
+        if d.get("services"):
+            line += f" services={','.join(d['services'])}"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
 def _service_from_alert(labels: dict) -> str:
-    """
-    Derive the Loki job name from alert labels.
-    AlertManager label 'job' matches the Prometheus job_name, which matches
-    the Promtail service label we set in promtail-config.yml.
-    Falls back to 'alertname' value if 'job' is absent.
-    """
     return labels.get("job") or labels.get("service") or labels.get("alertname", "unknown")
 
 
 # ─── LLM Diagnosis ────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are an SRE on-call assistant for ObserveOps.
-You will receive an alert and recent error logs from the affected service.
-Your job is to diagnose the root cause in 2-3 sentences, then give ONE specific
-shell command that fixes or investigates it further.
+You receive an alert, recent deployment history, and recent error logs.
+
+Your job: diagnose the ROOT CAUSE in 2-3 sentences, then give ONE specific shell command.
 
 Rules:
-- Be specific. Reference actual log content if present.
-- The fix command must work with Docker Compose (not Kubernetes).
-- If logs are empty, say so and suggest the most likely cause based on the alert.
-- Do not pad with generic advice. Be direct.
+- Check the deploy history first. If an alert started after a recent deploy, say so explicitly.
+- Reference actual log content if present (OOM kill = exit code 137, specific exceptions, etc.)
+- The fix command must work with Docker Compose on EC2 (not Kubernetes, not systemctl).
+- Prefer investigation commands over restart commands — find the cause before fixing it.
+- If logs are empty, explain the most likely cause from the alert metadata.
 
-Format your response exactly as:
-DIAGNOSIS: <2-3 sentence root cause>
+Format exactly as:
+DIAGNOSIS: <2-3 sentence root cause, including deploy correlation if relevant>
 FIX: <one shell command>
 """
 
-def _diagnose(alertname: str, labels: dict, annotations: dict, log_lines: list[str]) -> str:
-    """Call Groq LLM with alert context + logs. Returns 'DIAGNOSIS: ...\nFIX: ...'."""
-    log_block = "\n".join(log_lines) if log_lines else "(no recent error logs found)"
+
+def _diagnose(alertname: str, labels: dict, annotations: dict,
+              log_lines: list[str], deploy_context: str) -> str:
+    log_block = "\n".join(log_lines) if log_lines else "(no recent error logs found in Loki)"
 
     user_content = f"""ALERT: {alertname}
 Severity: {labels.get('severity', 'unknown')}
 Summary: {annotations.get('summary', 'N/A')}
 Description: {annotations.get('description', 'N/A')}
 
-RECENT ERROR LOGS ({len(log_lines)} lines):
+RECENT DEPLOYMENTS (check if alert correlates with a deploy):
+{deploy_context}
+
+RECENT ERROR LOGS from Loki ({len(log_lines)} lines):
 {log_block}
 """
     response = groq_client.chat.completions.create(
@@ -131,23 +203,22 @@ RECENT ERROR LOGS ({len(log_lines)} lines):
             {"role": "user",   "content": user_content},
         ],
         temperature=0,
-        max_tokens=300,
+        max_tokens=350,
         timeout=LLM_TIMEOUT,
     )
     return response.choices[0].message.content.strip()
 
 
-# ─── Slack helpers ─────────────────────────────────────────────────────────────
+# ─── Slack notification ───────────────────────────────────────────────────────
 
 _SEVERITY_COLOR = {"critical": "danger", "warning": "warning"}
 
-def _send_slack(alertname: str, severity: str, diagnosis: str, log_count: int):
-    """Post the LLM diagnosis to Slack. No-op if SLACK_WEBHOOK is not set."""
+
+def _send_slack(alertname: str, severity: str, diagnosis: str,
+                log_count: int, deploy_context: str):
     if not SLACK_WEBHOOK:
-        logger.info("SLACK_WEBHOOK_URL not set — skipping Slack notification")
         return
 
-    # Parse 'DIAGNOSIS: ...\nFIX: ...' out of LLM response
     diag_line = fix_line = ""
     for line in diagnosis.splitlines():
         if line.startswith("DIAGNOSIS:"):
@@ -155,24 +226,27 @@ def _send_slack(alertname: str, severity: str, diagnosis: str, log_count: int):
         elif line.startswith("FIX:"):
             fix_line = line.replace("FIX:", "").strip()
 
-    color  = _SEVERITY_COLOR.get(severity, "#439FE0")
-    emoji  = "🚨" if severity == "critical" else "⚠️"
+    color = _SEVERITY_COLOR.get(severity, "#439FE0")
+    emoji = "🚨" if severity == "critical" else "⚠️"
+
+    fields = [
+        {"title": "Root Cause",      "value": diag_line or diagnosis, "short": False},
+        {"title": "Suggested Fix",   "value": f"`{fix_line}`" if fix_line else "—", "short": False},
+        {"title": "Recent Deploys",  "value": deploy_context or "—",  "short": False},
+        {"title": "Log Lines",       "value": str(log_count),         "short": True},
+        {"title": "Severity",        "value": severity,               "short": True},
+    ]
 
     payload = {
         "attachments": [{
             "color": color,
             "title": f"{emoji} AI Diagnosis: {alertname}",
-            "fields": [
-                {"title": "Root Cause",    "value": diag_line or diagnosis, "short": False},
-                {"title": "Suggested Fix", "value": f"`{fix_line}`" if fix_line else "—", "short": False},
-                {"title": "Log Lines Used","value": str(log_count),         "short": True},
-                {"title": "Severity",      "value": severity,               "short": True},
-            ],
+            "fields": fields,
             "footer": "ObserveOps LLM Alert Autopilot  |  Groq llama-3.1-8b-instant",
         }]
     }
     data = json.dumps(payload).encode()
-    req  = urllib.request.Request(
+    req = urllib.request.Request(
         SLACK_WEBHOOK,
         data=data,
         headers={"Content-Type": "application/json"},
@@ -180,48 +254,86 @@ def _send_slack(alertname: str, severity: str, diagnosis: str, log_count: int):
     urllib.request.urlopen(req, timeout=10)
 
 
-# ─── Webhook endpoint ──────────────────────────────────────────────────────────
+# ─── MTTR calculation ─────────────────────────────────────────────────────────
+
+def _record_mttr(alert: dict):
+    """
+    When AlertManager sends a resolved alert, calculate MTTR from the payload
+    timestamps and record it as a Prometheus histogram observation.
+    MTTR = endsAt - startsAt in seconds.
+    """
+    starts_at = alert.get("startsAt", "")
+    ends_at   = alert.get("endsAt", "")
+    alertname = alert.get("labels", {}).get("alertname", "unknown")
+
+    if not starts_at or not ends_at:
+        return
+    try:
+        # AlertManager timestamps are ISO 8601 with Z suffix
+        fmt = "%Y-%m-%dT%H:%M:%S.%fZ"
+        start_dt = datetime.strptime(starts_at[:26] + "Z", fmt)
+        end_dt   = datetime.strptime(ends_at[:26] + "Z", fmt)
+        mttr = (end_dt - start_dt).total_seconds()
+        if 0 < mttr < 86400:  # sanity check: between 0 and 24 hours
+            alert_mttr_seconds.labels(alertname=alertname).observe(mttr)
+            logger.info("MTTR for %s: %.0fs (%.1f minutes)", alertname, mttr, mttr / 60)
+    except Exception as exc:
+        logger.warning("Could not parse MTTR timestamps: %s", exc)
+
+
+# ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.post("/webhook")
 async def webhook(request: Request):
     """
     AlertManager webhook receiver.
-    Payload: https://prometheus.io/docs/alerting/latest/configuration/#webhook_config
+    Handles both firing alerts (→ LLM diagnosis) and resolved alerts (→ MTTR tracking).
     """
     try:
         body: dict[str, Any] = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="invalid JSON")
 
+    # Track MTTR for resolved alerts
+    for alert in body.get("alerts", []):
+        if alert.get("status") == "resolved":
+            _record_mttr(alert)
+            alerts_received.labels(
+                alertname=alert.get("labels", {}).get("alertname", "unknown"),
+                status="resolved"
+            ).inc()
+
+    # Diagnose firing alerts
     firing_alerts = [a for a in body.get("alerts", []) if a.get("status") == "firing"]
     if not firing_alerts:
         return JSONResponse({"status": "ok", "processed": 0})
 
+    deploy_context = _build_deploy_context()
     processed = 0
+
     for alert in firing_alerts:
         labels      = alert.get("labels", {})
         annotations = alert.get("annotations", {})
         alertname   = labels.get("alertname", "UnknownAlert")
 
-        alerts_received.labels(alertname=alertname).inc()
-        logger.info("Processing alert: %s labels=%s", alertname, labels)
+        alerts_received.labels(alertname=alertname, status="firing").inc()
+        logger.info("Processing firing alert: %s", alertname)
 
         start = time.time()
         try:
             service   = _service_from_alert(labels)
             log_lines = _fetch_loki_logs(service)
+            diagnosis = _diagnose(alertname, labels, annotations, log_lines, deploy_context)
 
-            diagnosis = _diagnose(alertname, labels, annotations, log_lines)
-            logger.info("Diagnosis for %s: %s", alertname, diagnosis[:120])
-
-            _send_slack(alertname, labels.get("severity", "warning"), diagnosis, len(log_lines))
+            logger.info("Diagnosis for %s: %s", alertname, diagnosis[:150])
+            _send_slack(alertname, labels.get("severity", "warning"),
+                        diagnosis, len(log_lines), deploy_context)
 
             alerts_diagnosed.labels(alertname=alertname).inc()
             processed += 1
 
         except Exception as exc:
-            stage = type(exc).__name__
-            diagnosis_errors.labels(stage=stage).inc()
+            diagnosis_errors.labels(stage=type(exc).__name__).inc()
             logger.error("Diagnosis failed for %s: %s", alertname, exc, exc_info=True)
         finally:
             diagnosis_latency.observe(time.time() - start)
@@ -229,11 +341,56 @@ async def webhook(request: Request):
     return JSONResponse({"status": "ok", "processed": processed})
 
 
-# ─── Health + Metrics ─────────────────────────────────────────────────────────
+@app.post("/deploy-event")
+async def deploy_event(event: DeployEvent):
+    """
+    Called by deploy.sh after every production deployment.
+    Stores the deploy for LLM context and increments the DORA deployment counter.
+
+    Why this endpoint exists:
+    When an alert fires 10 minutes after a deploy, the LLM should automatically
+    say "this started after commit X was deployed." Without this, the on-call
+    has to manually correlate alert time with git log — wasting minutes during an incident.
+    """
+    record = {
+        "commit":         event.commit,
+        "deployer":       event.deployer,
+        "status":         event.status,
+        "services":       event.services,
+        "timestamp_unix": time.time(),
+        "timestamp_iso":  datetime.now(timezone.utc).isoformat(),
+    }
+    _recent_deploys.insert(0, record)
+    del _recent_deploys[10:]  # keep last 10
+
+    deployments_total.labels(commit=event.commit[:12], status=event.status).inc()
+    last_deployment_timestamp.set(time.time())
+
+    logger.info("Deploy recorded: commit=%s deployer=%s status=%s",
+                event.commit[:12], event.deployer, event.status)
+
+    return {
+        "status":    "recorded",
+        "commit":    event.commit[:12],
+        "deployer":  event.deployer,
+        "timestamp": record["timestamp_iso"],
+    }
+
+
+@app.get("/deploy-history")
+def deploy_history():
+    """Returns recent deployment history (used by LLM context + debugging)."""
+    return {"deploys": _recent_deploys, "count": len(_recent_deploys)}
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "llm-alert-autopilot"}
+    return {
+        "status":            "ok",
+        "service":           "llm-alert-autopilot",
+        "recent_deploys":    len(_recent_deploys),
+        "groq_model":        LLM_MODEL,
+    }
 
 
 @app.get("/metrics")

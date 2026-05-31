@@ -100,9 +100,9 @@ services:
       resources:
         limits:
           cpus: '1.0'
-          memory: 512M
+          memory: 768M    # increased from 512M — FAISS index + sentence-transformers + LangChain
         reservations:
-          memory: 256M
+          memory: 384M
     networks:
       - observeops
     restart: unless-stopped
@@ -318,6 +318,8 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - LOKI_URL=http://loki:3100
+      - GRAFANA_URL=http://grafana:3000
+      - GRAFANA_PASSWORD=${GRAFANA_PASSWORD:-observeops123}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 30s
