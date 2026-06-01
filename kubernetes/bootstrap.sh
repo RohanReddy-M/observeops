@@ -41,6 +41,16 @@ echo "==> Waiting for ArgoCD to be ready..."
 kubectl wait --for=condition=available deployment/argocd-server \
   -n argocd --timeout=120s
 
+echo "==> Injecting ACM certificate ARN into ingress..."
+ACM_CERT_ARN=$(cd terraform && terraform output -raw acm_certificate_arn 2>/dev/null || echo "")
+if [ -n "$ACM_CERT_ARN" ]; then
+  sed -i "s|__ACM_CERT_ARN__|${ACM_CERT_ARN}|g" kubernetes/ingress/ingress.yaml
+  echo "  Cert ARN injected: ${ACM_CERT_ARN}"
+else
+  echo "  WARNING: Could not get cert ARN from Terraform. Ingress TLS will not work."
+  echo "  Run: terraform -chdir=terraform output -raw acm_certificate_arn"
+fi
+
 echo "==> Bootstrapping App of Apps (sync waves will enforce deploy order)..."
 kubectl apply -f kubernetes/argocd/project.yaml
 kubectl apply -f kubernetes/argocd/app-of-apps.yaml
