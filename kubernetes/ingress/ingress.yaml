@@ -6,9 +6,9 @@ metadata:
   annotations:
     alb.ingress.kubernetes.io/scheme: "internet-facing"
     alb.ingress.kubernetes.io/target-type: "ip"
-    # Get the cert ARN after terraform apply:
-    #   terraform -chdir=terraform output -raw acm_certificate_arn
-    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-south-1:198239799708:certificate/REPLACE_WITH_TERRAFORM_OUTPUT"
+    # Cert ARN is injected by bootstrap.sh from terraform output.
+    # To get it manually: terraform -chdir=terraform output -raw acm_certificate_arn
+    alb.ingress.kubernetes.io/certificate-arn: "__ACM_CERT_ARN__"
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
     alb.ingress.kubernetes.io/healthcheck-path: "/health"
