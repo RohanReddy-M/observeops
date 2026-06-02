@@ -1,10 +1,18 @@
 # ObserveOps
 
-> Cloud-native DevOps + AIOps platform built end-to-end on AWS. Three microservices, a LangGraph RAG agent, a complete observability stack, and an AI-powered incident analyzer — all live at [secureship.click](https://secureship.click).
+> Production-grade DevOps + AIOps platform built end-to-end on AWS. Microservices, LangGraph RAG agent, LLM-powered alert diagnosis, full observability with SLOs and error budgets, chaos engineering, and DORA metrics — live at [secureship.click](https://secureship.click).
 
 [![CI/CD](https://github.com/RohanReddy-M/observeops/actions/workflows/deploy.yml/badge.svg)](https://github.com/RohanReddy-M/observeops/actions/workflows/deploy.yml)
 
-The goal was to build something that works the way production systems actually work — not a demo that runs on localhost. Every design decision reflects a real operational tradeoff: monitoring runs on a separate host so a CPU spike doesn't blind you, secrets never touch code, the AI layer fails gracefully instead of hallucinating, and every deploy can roll back automatically if health checks fail.
+The goal was to build something that works the way production systems actually work — not a demo that runs on localhost. Every design decision reflects a real operational tradeoff: monitoring runs on a separate host so a CPU spike doesn't blind you, secrets never touch code, the AI diagnoses root cause from logs instead of hallucinating, and every deploy registers with the monitoring system so alert diagnosis includes recent deployment context.
+
+**What makes this different from a standard monitoring project:**
+- SLOs with 30-day error budgets and burn rate alerting (Google SRE Workbook model)
+- LLM Alert Autopilot that diagnoses every alert using recent logs + deployment history
+- Chaos engineering that verifies zombie recovery — not just "container is up" but "API actually works and knowledge base is populated"
+- DORA metrics tracked automatically (deployment frequency, MTTR from resolved alerts)
+- Deadman switch: Watchdog alert proves the alerting pipeline itself is alive
+- 8 Architecture Decision Records documenting every major design choice with tradeoffs
 
 ---
 
@@ -29,25 +37,33 @@ ALB  (public subnet)
     ▼  private subnets (no public IPs — only ALB can reach these)
     │
     ├── EC2: App Server
-    │       nginx           reverse proxy, rate limiting, JSON access logs
-    │       secureship      FastAPI, DynamoDB-backed ships API
-    │       statusservice   Flask, /load and /fail endpoints for drill testing
-    │       ragservice      LangGraph + FAISS + Groq, anti-hallucination RAG
-    │       promtail        ships container logs to Loki
+    │       nginx                 reverse proxy, rate limiting, JSON access logs
+    │       secureship            FastAPI, DynamoDB-backed ships API, rate limiting
+    │       statusservice         Flask, /load and /fail endpoints for drill testing
+    │       ragservice            LangGraph + FAISS + Groq, anti-hallucination RAG
+    │       llm-alert-autopilot   AlertManager webhook receiver → LLM diagnosis → Slack
+    │       otel-collector        receives traces from apps, forwards to Tempo
+    │       promtail              ships container logs to Loki
     │
     └── EC2: Observability Server  (separate host — by design)
-            prometheus      scrapes all services every 15s
-            grafana         dashboards + alerting
+            prometheus      scrapes all services every 15s, evaluates SLO recording rules
+            grafana         4 dashboards: services, SLO/error budget, DORA, LLM ops
             loki            log aggregation
-            alertmanager    routes alerts → Lambda Function URL
+            alertmanager    routes alerts → llm-autopilot → Slack (critical/warning)
+            grafana-tempo   distributed trace storage
             node-exporter   host-level metrics (CPU, memory, disk, network)
 
 Alert pipeline:
     Prometheus threshold breached
         → AlertManager fires
-            → POST to Lambda Function URL (no API Gateway)
-                → Lambda calls RAGService (LangGraph + FAISS + Groq)
-                    → diagnosis published to SNS
+            → llm-alert-autopilot (Loki log query + deploy context + Groq LLM)
+                → Slack diagnosis in ~3 seconds (root cause + fix command)
+            → also POST to Lambda Function URL (deeper incident analysis)
+                → Lambda calls RAGService → diagnosis published to SNS
+
+    Watchdog alert (always fires every 15s)
+        → watchdog-sink receiver (deadman switch)
+            → healthchecks.io ping — if pings stop, alerting pipeline is dead
                         → email / Slack / PagerDuty subscribers
 ```
 
@@ -187,18 +203,87 @@ push → main/develop
 
 ---
 
+## Reliability Engineering
+
+### Service Level Objectives
+
+Four SLOs defined and tracked in Grafana with 30-day error budgets:
+
+| Service | SLO | Error Budget | Alert |
+|---|---|---|---|
+| SecureShip availability | 99.5% | 216 min/month | `SecureShipSLOBreach` |
+| SecureShip p99 latency | < 500ms | — | `HighLatency` |
+| RAGService success rate | 95% | — | `RAGServiceSuccessSLOBreach` |
+| RAGService grounded rate | 50% | — | `RAGHighUngroundedRate` |
+
+**Error budget burn rate alerting:** `SecureShipBurnRateTooHigh` fires when the 1-hour burn rate exceeds 14.4× the allowed pace — meaning the monthly budget will be exhausted in ~50 hours. At this threshold, deploys are blocked until reliability recovers. The 14.4 multiplier comes from Google's SRE Workbook multi-window burn rate model.
+
+`RAGIndexEmpty` fires when RAGService is running but the FAISS knowledge base has zero documents — a "zombie recovery" state discovered during chaos experiments where the service appeared healthy but answered nothing.
+
+### Chaos Engineering
+
+```bash
+make chaos          # kill secureship → verify alert fires + API recovery
+make chaos-oom      # simulate memory exhaustion on ragservice
+make chaos-depkill  # kill loki → test graceful degradation
+```
+
+Each run:
+1. Injects the failure
+2. Verifies `ServiceDown` alert fires in AlertManager (target: <90 seconds)
+3. Verifies container auto-restarts (restart: unless-stopped)
+4. **End-to-end functional verification** — not just "container is running" but actual API call + FAISS document count check
+5. Auto-generates a postmortem pre-fill in `docs/postmortems/`
+
+**The zombie recovery problem:** After an OOM kill, the container restarts and the health check passes — but the in-memory FAISS index is empty. All queries return "I don't have enough context." Basic uptime monitoring misses this entirely. The chaos script catches it by checking `vector_store_documents_total` after recovery. A completed postmortem from this discovery is in `docs/postmortems/2026-05-31-chaos-ragservice-oom.md`.
+
+### DORA Metrics
+
+`deploy.sh` registers every deployment with the LLM Alert Autopilot via `POST /deploy-event`. AlertManager resolved-alerts provide MTTR. Grafana DORA dashboard shows:
+
+- **Deployment frequency** — deploys per 7/30 days
+- **MTTR** — p50 and p95 recovery time from Prometheus histogram
+- **AI diagnosis success rate** — fraction of alerts successfully diagnosed by LLM
+
+When an alert fires, the LLM diagnosis includes: *"High error rate started 8 minutes after commit `abc1234` deployed by Rohan"* — deploy context is automatically included so root cause correlation is immediate.
+
+### Architecture Decision Records
+
+Eight ADRs in `docs/adr/` document the reasoning behind every major design decision:
+
+| ADR | Decision |
+|---|---|
+| 001 | Two-server architecture (app vs observability) |
+| 002 | SSM Session Manager instead of SSH |
+| 003 | DynamoDB instead of RDS |
+| 004 | OIDC instead of IAM access keys for CI/CD |
+| 005 | RAG with grounding check instead of raw LLM |
+| 006 | Prometheus + Grafana instead of Datadog/New Relic |
+| 007 | Deadman switch (Watchdog alert pattern) |
+| 008 | Container image pinning strategy and supply chain tradeoffs |
+
+---
+
 ## Running locally
 
 ```bash
 cp .env.example .env   # add GROQ_API_KEY (free at console.groq.com)
-docker compose up -d
+make dev-up            # starts all services in correct order
 
 # Services
-# SecureShip:   http://localhost:8001
-# StatusService: http://localhost:8002
-# RAGService:   http://localhost:8003
-# Grafana:      http://localhost:3000  →  admin / observeops123
-# Prometheus:   http://localhost:9090
+# SecureShip:          http://localhost:8001/docs
+# StatusService:       http://localhost:8002
+# RAGService:          http://localhost:8003/docs
+# LLM Alert Autopilot: http://localhost:8080/health
+# Grafana:             http://localhost:3000  →  admin / observeops123
+# Prometheus:          http://localhost:9090
+# AlertManager:        http://localhost:9093
+#
+# Dashboards:
+#   Services Overview:  http://localhost:3000/d/observeops-services
+#   SLO + Error Budget: http://localhost:3000/d/observeops-slo
+#   DORA Metrics:       http://localhost:3000/d/observeops-dora
+#   LLM Ops:            http://localhost:3000/d/observeops-llm
 
 # Ingest a runbook into RAGService
 curl -X POST http://localhost:8003/ingest \
@@ -240,6 +325,8 @@ make infra-down  # stops billing (keeps Route53 zone — ~₹42/month idle)
 
 ---
 
-## Related
+## Note on live demo
 
-**[LLM Alert Autopilot](https://github.com/RohanReddy-M/llm-alert-autopilot)** — Standalone AlertManager webhook receiver built on this stack. Queries Loki directly for log context, sends diagnosis + runnable fix command to Slack in under 30 seconds. Drop-in via one `webhook_configs` entry.
+**secureship.click is live on-demand.** AWS infrastructure (EC2, ALB, NAT Gateway) is torn down when not in use to avoid ~$85/month in idle costs. Run `make infra-up` to provision from scratch in ~10 minutes, or run `make dev-up` locally — no AWS account required (DynamoDB falls back to in-memory, Groq API key is the only requirement).
+
+To request a live demo: open an issue on this repo or reach out directly.
