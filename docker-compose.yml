@@ -337,6 +337,7 @@ services:
   tempo:
     image: grafana/tempo:2.6.1
     container_name: tempo
+    user: "0"
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./monitoring/tempo/tempo.yaml:/etc/tempo.yaml:ro
@@ -353,7 +354,7 @@ services:
   # Receives traces from instrumented apps (secureship, ragservice) via OTLP
   # and forwards them to Tempo for storage.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.115.0
+    image: otel/opentelemetry-collector-contrib:latest
     container_name: otel-collector
     command: ["--config=/etc/otel-collector.yaml"]
     volumes:

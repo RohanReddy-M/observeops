@@ -19,8 +19,6 @@ exporters:
     endpoint: tempo:4317
     tls:
       insecure: true
-  logging:
-    loglevel: warn
 
 service:
   pipelines:

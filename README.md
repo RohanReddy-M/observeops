@@ -1,18 +1,53 @@
 # ObserveOps
 
-> Production-grade DevOps + AIOps platform built end-to-end on AWS. Microservices, LangGraph RAG agent, LLM-powered alert diagnosis, full observability with SLOs and error budgets, chaos engineering, and DORA metrics — live at [secureship.click](https://secureship.click).
+> Production systems fail. The average team spends **45 minutes** diagnosing before they start fixing.  
+> ObserveOps cuts that to **~3 seconds** — AlertManager detects the failure, Loki pulls the last 50 log lines, an LLM finds the root cause, and Slack gets the fix command. No human involved.
 
 [![CI/CD](https://github.com/RohanReddy-M/observeops/actions/workflows/deploy.yml/badge.svg)](https://github.com/RohanReddy-M/observeops/actions/workflows/deploy.yml)
 
-The goal was to build something that works the way production systems actually work — not a demo that runs on localhost. Every design decision reflects a real operational tradeoff: monitoring runs on a separate host so a CPU spike doesn't blind you, secrets never touch code, the AI diagnoses root cause from logs instead of hallucinating, and every deploy registers with the monitoring system so alert diagnosis includes recent deployment context.
+Cloud platform built end-to-end on AWS — Terraform IaC, Kubernetes + ArgoCD GitOps, GitHub Actions CI/CD with OIDC, Prometheus + Grafana + Loki observability, LangGraph RAG agent, SLOs with error budgets, chaos engineering, and DORA metrics.
 
-**What makes this different from a standard monitoring project:**
-- SLOs with 30-day error budgets and burn rate alerting (Google SRE Workbook model)
-- LLM Alert Autopilot that diagnoses every alert using recent logs + deployment history
-- Chaos engineering that verifies zombie recovery — not just "container is up" but "API actually works and knowledge base is populated"
-- DORA metrics tracked automatically (deployment frequency, MTTR from resolved alerts)
-- Deadman switch: Watchdog alert proves the alerting pipeline itself is alive
-- 8 Architecture Decision Records documenting every major design choice with tradeoffs
+Live at **[secureship.click](https://secureship.click)** · [Run locally in 2 minutes](#running-locally) without an AWS account.
+
+---
+
+## See it in action
+
+**AI autopilot: ServiceDown alert → LLM root cause → Slack in ~3 seconds**
+
+![AI Autopilot Slack Alert](docs/screenshots/slack-autopilot.png)
+
+**Grafana dashboards: SLO/Error Budget · DORA Metrics**
+
+![SLO and Error Budget Dashboard](docs/screenshots/grafana-slo.png)
+
+![DORA Metrics Dashboard](docs/screenshots/grafana-dora.png)
+
+---
+
+## By the numbers
+
+| | |
+|---|---|
+| **~3 seconds** | alert fires → Slack diagnosis (AI autopilot) |
+| **~30 seconds** | CloudTrail security event → Slack notification (Lambda) |
+| **15 alert rules** | across 5 groups including LLM quality monitoring |
+| **4 Grafana dashboards** | Services, SLO/Error Budget, DORA Metrics, LLM Ops |
+| **8 ADRs** | every major design decision documented with tradeoffs |
+| **3 services** | FastAPI + Flask + LangGraph RAG, all containerised |
+| **2 EC2 instances** | app and observability separated by design |
+| **1 Lambda** | CloudTrail security events → AI diagnosis → SNS |
+
+---
+
+## What makes this different from a standard monitoring project
+
+- **LLM Alert Autopilot** — every alert is automatically diagnosed using real Loki logs + deployment history. Root cause and fix command posted to Slack in ~3 seconds, before a human opens their laptop
+- **SLOs with 30-day error budgets** and burn rate alerting (14.4× multiplier from Google SRE Workbook — deploys block when budget burns too fast)
+- **Chaos engineering that catches zombie recovery** — after an OOM kill the service restarts and the health check passes, but the in-memory FAISS index is empty and all queries return nothing. Basic uptime monitoring misses this. Caught by checking `vector_store_documents_total` after recovery
+- **DORA metrics tracked automatically** — deployment frequency, MTTR from resolved alerts, AI diagnosis success rate
+- **Deadman switch** — Watchdog alert proves the alerting pipeline itself is alive, not just the services it monitors
+- **8 Architecture Decision Records** documenting every major design choice with alternatives considered and rejected
 
 ---
 

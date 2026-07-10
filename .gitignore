@@ -1,32 +1,37 @@
-# Terraform
-.terraform/
-.terraform.lock.hcl
-*.tfstate
-*.tfstate.backup
-*.tfvars
-!example.tfvars
-tfplan
-*.zip
-
-# Never commit these
-*.pem
-*.key
+# Environment — never commit real secrets
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
+
+# Terraform state
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/.terraform.lock.hcl
+terraform/tfplan
 
 # Python
 __pycache__/
-*.pyc
-venv/
+*.py[cod]
+*.pyo
+.pytest_cache/
 .venv/
-
-# Docker
-.docker/
+venv/
+*.egg-info/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Claude Code local settings
-.claude/
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# Build
+dist/
+build/

@@ -1,23 +1,35 @@
-# Rohan Reddy
+# Rohan Reddy M
 
-DevOps / Cloud Engineer — I build production infrastructure, not toy projects.
+Cloud Engineer — I design and operate cloud infrastructure end-to-end, from Terraform provisioning to AI-powered incident response.
 
-## What I'm working on
+---
 
-**[ObserveOps](https://github.com/RohanReddy-M/observeops)** — production-grade DevOps + MLOps platform on AWS
+## ObserveOps
 
-- Terraform IaC: VPC, EC2, ALB, ACM, Route53 — fully automated provisioning
-- GitHub Actions CI/CD with OIDC auth (zero static AWS credentials)
-- Security pipeline: Trivy CVE scan + Bandit SAST + TruffleHog secret detection
-- Full observability: Prometheus + Grafana + Loki + AlertManager
-- Kubernetes manifests for EKS: HPA auto-scaling, spot instances, PVCs, ALB Ingress
-- AI incident response: RAG pipeline with LangGraph + FAISS + Groq (grounding, not hallucination)
-- Live at: **https://secureship.click**
+**[github.com/RohanReddy-M/observeops](https://github.com/RohanReddy-M/observeops)** · live at [secureship.click](https://secureship.click)
+
+Production-grade cloud platform on AWS with automated incident response. When a service fails:
+
+1. AlertManager detects it in **<30 seconds**
+2. Loki pulls the last 50 log lines automatically
+3. LLM finds the root cause
+4. Slack gets the fix command in **~3 seconds** — no human involved
+
+**Cloud infrastructure:** Terraform IaC (VPC, EC2, ALB, Route53, DynamoDB, Lambda, EventBridge, SSM) · private subnets · IMDSv2 · least-privilege IAM · OIDC for CI/CD (zero static credentials)
+
+**Platform:** Kubernetes + ArgoCD GitOps · GitHub Actions · Docker · nginx · OpenTelemetry
+
+**Observability:** Prometheus · Grafana (4 dashboards) · Loki · AlertManager · Tempo · SLOs + error budgets · DORA metrics
+
+**AI layer:** LangGraph RAG agent · FAISS · Groq · CloudTrail security alerting via Lambda
+
+---
 
 ## Stack
 
-`AWS` `Terraform` `Docker` `Kubernetes` `GitHub Actions` `Python` `FastAPI` `Flask` `Prometheus` `Grafana` `Loki` `nginx` `LangChain` `LangGraph` `FAISS`
+`AWS` `Terraform` `Kubernetes` `ArgoCD` `Docker` `GitHub Actions` `Python` `FastAPI` `Flask`  
+`Prometheus` `Grafana` `Loki` `AlertManager` `OpenTelemetry` `LangGraph` `FAISS` `nginx`
 
-## Contact
+---
 
 machireddy23@gmail.com
