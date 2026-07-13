@@ -14,7 +14,7 @@ import random
 import logging
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Flask, jsonify, request, Response
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
@@ -22,7 +22,7 @@ from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTEN
 class JSONFormatter(logging.Formatter):
     def format(self, record):
         return json.dumps({
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "message": record.getMessage(),
             "service": "statusservice"
@@ -56,7 +56,7 @@ def health():
     return jsonify({
         "status": "healthy",
         "service": "statusservice",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }), 200
 
 @app.route('/metrics')
@@ -79,7 +79,7 @@ def status():
             "prometheus": "healthy",
             "grafana": "healthy"
         },
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "uptime_seconds": time.time() - app.start_time
     })
 
@@ -120,7 +120,7 @@ def generate_load():
     return jsonify({
         "message": f"Load generated for {duration} seconds",
         "iterations": iterations,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
 @app.route('/fail')
@@ -154,7 +154,7 @@ def simulate_failure():
     return jsonify({
         "message": "Request succeeded",
         "failure_rate": failure_rate,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
 @app.route('/')
