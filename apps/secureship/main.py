@@ -107,6 +107,12 @@ class ShipCreate(BaseModel):
     cargo: str = Field(..., min_length=1, max_length=256)
 
 
+class ShipUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128)
+    status: Optional[str] = Field(None, pattern=r'^(active|docked|transit)$')
+    cargo: Optional[str] = Field(None, min_length=1, max_length=256)
+
+
 # ── DynamoDB setup ────────────────────────────────────────────────────────────
 DYNAMODB_TABLE = os.getenv("DYNAMODB_TABLE", "")
 
@@ -156,6 +162,21 @@ def db_put_ship(ship: dict) -> dict:
     try:
         table.put_item(Item=ship)
         return ship
+    except ClientError as e:
+        logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
+        raise
+
+
+def db_delete_ship(ship_id: str) -> bool:
+    table = get_dynamodb_table()
+    if table is None:
+        if ship_id not in _LOCAL_SHIPS:
+            return False
+        del _LOCAL_SHIPS[ship_id]
+        return True
+    try:
+        table.delete_item(Key={"ship_id": ship_id})
+        return True
     except ClientError as e:
         logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
         raise
@@ -262,6 +283,29 @@ async def create_ship(request: Request, ship: ShipCreate):
     saved = db_put_ship(ship.model_dump())
     logger.info("ship_created", extra={"ship_id": saved["ship_id"]})
     return {"message": "Ship created", "ship": saved, "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.put("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def update_ship(request: Request, ship_id: str, updates: ShipUpdate):
+    existing = db_get_ship(ship_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")
+    updated = {**existing, **{k: v for k, v in updates.model_dump().items() if v is not None}}
+    saved = db_put_ship(updated)
+    logger.info("ship_updated", extra={"ship_id": ship_id})
+    return {"message": "Ship updated", "ship": saved, "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.delete("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
+async def delete_ship(request: Request, ship_id: str):
+    existing = db_get_ship(ship_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")
+    db_delete_ship(ship_id)
+    logger.info("ship_deleted", extra={"ship_id": ship_id})
+    return {"message": f"Ship {ship_id} deleted", "timestamp": datetime.utcnow().isoformat()}
 
 
 # Backward-compatible redirects — old /api/ships/* → /api/v1/ships/*
