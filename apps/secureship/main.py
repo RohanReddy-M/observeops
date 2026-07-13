@@ -3,7 +3,7 @@ import logging
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response, HTTPException, Security, Depends
@@ -38,7 +38,7 @@ except ImportError:
 class JSONFormatter(logging.Formatter):
     def format(self, record):
         log_obj = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "message": record.getMessage(),
             "logger": record.name,
@@ -216,7 +216,7 @@ async def observability_middleware(request: Request, call_next):
 async def health_check():
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": os.getenv('APP_VERSION', '1.0.0'),
         "storage": "dynamodb" if (DYNAMODB_AVAILABLE and DYNAMODB_TABLE) else "local"
     }
@@ -264,7 +264,7 @@ async def list_ships(
         "limit": limit,
         "offset": offset,
         "has_more": (offset + limit) < total,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -282,7 +282,7 @@ async def get_ship(request: Request, ship_id: str):
 async def create_ship(request: Request, ship: ShipCreate):
     saved = db_put_ship(ship.model_dump())
     logger.info("ship_created", extra={"ship_id": saved["ship_id"]})
-    return {"message": "Ship created", "ship": saved, "timestamp": datetime.utcnow().isoformat()}
+    return {"message": "Ship created", "ship": saved, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.put("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
@@ -294,7 +294,7 @@ async def update_ship(request: Request, ship_id: str, updates: ShipUpdate):
     updated = {**existing, **{k: v for k, v in updates.model_dump().items() if v is not None}}
     saved = db_put_ship(updated)
     logger.info("ship_updated", extra={"ship_id": ship_id})
-    return {"message": "Ship updated", "ship": saved, "timestamp": datetime.utcnow().isoformat()}
+    return {"message": "Ship updated", "ship": saved, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.delete("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
@@ -305,7 +305,7 @@ async def delete_ship(request: Request, ship_id: str):
         raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")
     db_delete_ship(ship_id)
     logger.info("ship_deleted", extra={"ship_id": ship_id})
-    return {"message": f"Ship {ship_id} deleted", "timestamp": datetime.utcnow().isoformat()}
+    return {"message": f"Ship {ship_id} deleted", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 # Backward-compatible redirects — old /api/ships/* → /api/v1/ships/*

@@ -1,5 +1,5 @@
 # Web framework - handles HTTP requests, routing, validation
-fastapi==0.104.1
+fastapi==0.109.1
 
 # ASGI server - this actually runs FastAPI (like gunicorn but async)
 # We bind to 0.0.0.0 so it accepts connections from outside the container

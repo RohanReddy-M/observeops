@@ -115,6 +115,57 @@ def test_correlation_id_generated():
     assert len(response.headers["x-request-id"]) == 36  # UUID4 length
 
 
+# ── PUT (update ship) ─────────────────────────────────────────────────────────
+def test_update_ship_partial():
+    # Partial update — only 'status' changed, other fields preserved
+    response = client_follow.put("/api/v1/ships/ship-001", json={"status": "docked"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ship"]["status"] == "docked"
+    assert body["ship"]["ship_id"] == "ship-001"  # unchanged
+    assert "name" in body["ship"]                  # other fields preserved
+
+
+def test_update_ship_all_fields():
+    response = client_follow.put(
+        "/api/v1/ships/ship-001",
+        json={"name": "SS Updated", "status": "transit", "cargo": "steel"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ship"]["name"] == "SS Updated"
+    assert body["ship"]["cargo"] == "steel"
+
+
+def test_update_ship_invalid_status():
+    response = client_follow.put("/api/v1/ships/ship-001", json={"status": "flying"})
+    assert response.status_code == 422
+
+
+def test_update_ship_not_found():
+    response = client_follow.put("/api/v1/ships/no-such-ship", json={"status": "docked"})
+    assert response.status_code == 404
+
+
+# ── DELETE ────────────────────────────────────────────────────────────────────
+def test_delete_ship():
+    # Create a ship, then delete it
+    client_follow.post(
+        "/api/v1/ships",
+        json={"ship_id": "ship-to-delete", "name": "SS Doomed", "status": "docked", "cargo": "sand"},
+    )
+    response = client_follow.delete("/api/v1/ships/ship-to-delete")
+    assert response.status_code == 200
+    # Confirm it's gone
+    get_response = client_follow.get("/api/v1/ships/ship-to-delete")
+    assert get_response.status_code == 404
+
+
+def test_delete_ship_not_found():
+    response = client_follow.delete("/api/v1/ships/ghost-ship")
+    assert response.status_code == 404
+
+
 # ── API key auth (disabled when API_KEY env is not set) ───────────────────────
 def test_auth_open_when_key_not_configured(monkeypatch):
     monkeypatch.setenv("API_KEY", "")
