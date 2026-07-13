@@ -33,7 +33,7 @@ Live at **[secureship.click](https://secureship.click)** · [Run locally in 2 mi
 | **~30 seconds** | CloudTrail security event → Slack notification (Lambda) |
 | **15 alert rules** | across 5 groups including LLM quality monitoring |
 | **4 Grafana dashboards** | Services, SLO/Error Budget, DORA Metrics, LLM Ops |
-| **8 ADRs** | every major design decision documented with tradeoffs |
+| **9 ADRs** | every major design decision documented with tradeoffs |
 | **3 services** | FastAPI + Flask + LangGraph RAG, all containerised |
 | **2 EC2 instances** | app and observability separated by design |
 | **1 Lambda** | CloudTrail security events → AI diagnosis → SNS |
@@ -296,6 +296,31 @@ Eight ADRs in `docs/adr/` document the reasoning behind every major design decis
 | 006 | Prometheus + Grafana instead of Datadog/New Relic |
 | 007 | Deadman switch (Watchdog alert pattern) |
 | 008 | Container image pinning strategy and supply chain tradeoffs |
+| 009 | Groq (llama-3.1-8b-instant) instead of OpenAI / Claude / self-hosted Ollama |
+
+---
+
+## At scale, this breaks
+
+Knowing the limits of your own architecture is what separates engineering from wishful thinking. Every system has a ceiling — here's exactly where ObserveOps hits its.
+
+**Prometheus pull model — breaks at ~500 scrape targets**  
+Prometheus scrapes each target sequentially in a 15-second interval. At ~500 services the scrape loop barely completes before it starts again. Fix: [Prometheus federation](https://prometheus.io/docs/prometheus/latest/federation/) (shard scraping across multiple Prometheus instances), or migrate the high-cardinality metrics to VictoriaMetrics which handles 1M+ time series on equivalent hardware.
+
+**Single AlertManager — no high availability**  
+One AlertManager is a SPOF. If it crashes during a major incident, alerts stop routing — the moment you need diagnosis the most. Fix: AlertManager cluster (minimum 3 nodes with gossip protocol for state synchronisation). Accepted here because the monitoring server itself fails rarely, and MTTR for monitoring infrastructure is ~5 minutes via `terraform apply`. Acceptable for a project portfolio; not for production SLA.
+
+**LLM autopilot thundering herd**  
+If 20 alerts fire simultaneously (cascade failure scenario), the autopilot fires 20 parallel Groq API calls. At Groq's free tier rate limits (14,400 req/day, ~30 req/minute burst), sustained alert storms trigger rate limiting — you get no LLM diagnosis during a cascade, which is precisely when you need it most. Fix: add a queue with deduplication and back-pressure. AlertManager's `group_wait` + `group_by` absorbs some of this, but alert bursts still hit the rate limit. At scale: a Redis queue consuming the webhook events, with exponential backoff and a circuit breaker on the Groq client.
+
+**Loki on EC2 root volume**  
+Logs are stored on the observability server's EBS volume. When disk fills, Loki stops writing new logs — silently. No logs means the autopilot LLM diagnosis degrades to "no recent logs found" for every alert. Fix: Loki with [S3 backend](https://grafana.com/docs/loki/latest/configure/storage/) for object storage. The configuration change is ~10 lines; not implemented because S3 costs money and this project runs on a budget.
+
+**In-memory deploy history**  
+`_recent_deploys` in `llm-alert-autopilot/main.py` lives in the container's memory. Container restart = lost deploy history = LLM cannot correlate "high error rate started 8 minutes after deploy" for the first hour after restart. Fix: persist to Redis or DynamoDB with a TTL. The failure window is short and the consequence is degraded (not broken) diagnosis, so it's acceptable at this scale.
+
+**FAISS vector store is ephemeral**  
+RAGService's FAISS index is in-memory. OOM kill = index gone. The health check passes before re-indexing completes — the zombie state our chaos engineering was designed to catch. Fix: persist the FAISS index to S3 on write and reload on startup, or replace with a proper vector database (Pinecone, Weaviate, pgvector on RDS). Not implemented because this is a demo knowledge base, not a production runbook store.
 
 ---
 
