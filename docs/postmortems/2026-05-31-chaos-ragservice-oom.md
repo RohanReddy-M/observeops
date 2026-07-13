@@ -121,10 +121,10 @@ POST /ingest accepted texts of unlimited size. A 10MB document would be split in
 | Action | Why | Owner | Due | Status |
 |--------|-----|-------|-----|--------|
 | Add auto-ingest to deploy.sh | Re-populates FAISS on every restart | rohan | 2026-05-31 | ✓ Done (commit 28fc1a9) |
-| Add `max_text_size` validation on /ingest | Prevents single large document OOM | rohan | 2026-06-01 | Open |
-| Add FAISS document count to health endpoint | Makes empty index detectable by monitoring | rohan | 2026-06-01 | Open |
-| Increase ragservice memory limit to 768MB | Current 512MB is tight with model + index | rohan | 2026-06-02 | Open |
-| Add `RAGIndexEmpty` alert rule | Fires if vector_store_documents_total == 0 for > 2min | rohan | 2026-06-02 | Open |
+| Add `max_text_size` validation on /ingest | Prevents single large document OOM | rohan | 2026-06-01 | ✓ Done — 50KB limit, returns 400 with indices of oversized texts |
+| Add FAISS document count to health endpoint | Makes empty index detectable by monitoring | rohan | 2026-06-01 | ✓ Done — `/health` returns `vector_store_docs` + `knowledge_base_state` |
+| Increase ragservice memory limit to 768MB | Current 512MB is tight with model + index | rohan | 2026-06-02 | ✓ Done — docker-compose.yml updated with note |
+| Add `RAGIndexEmpty` alert rule | Fires if vector_store_documents_total == 0 for > 2min | rohan | 2026-06-02 | ✓ Done — `alerts.yml`, severity: warning, for: 2m |
 
 ---
 
@@ -157,9 +157,9 @@ We ran this system for weeks without discovering the FAISS silent degradation. O
 
 | Gap | Detection | Alert Added |
 |-----|-----------|-------------|
-| Empty FAISS index after restart | `vector_store_documents_total == 0` | Pending (action item above) |
+| Empty FAISS index after restart | `vector_store_documents_total == 0` | ✓ `RAGIndexEmpty` — fires after 2 min with zero docs while service is up |
 | OOM kill pattern | Exit code 137 in logs | LLM Autopilot catches via Loki |
-| Silent degraded responses | Functional verification in chaos.sh | Structural fix via auto-ingest |
+| Silent degraded responses | Functional verification in chaos.sh | Structural fix via auto-ingest in deploy.sh |
 
 ---
 
