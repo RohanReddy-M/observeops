@@ -37,7 +37,8 @@ help:
 	@echo "    make test-secureship    run SecureShip tests only"
 	@echo "    make test-statusservice run StatusService tests only"
 	@echo "    make test-ragservice    run RAGService tests only"
-	@echo "    make scan               run security scan (Trivy + Bandit)"
+	@echo "    make scan               run security scan (Trivy + Bandit)
+    make load-test          run k6 load test, validate SLOs under traffic"
 	@echo ""
 	@echo "  BUILD"
 	@echo "    make build              build all Docker images"
@@ -242,6 +243,21 @@ shell-secureship:
 
 shell-statusservice:
 	docker exec -it statusservice /bin/sh
+
+# ─── Load Testing ─────────────────────────────────────────────────────────────
+# Validates SLOs under realistic + spike traffic. Requires stack to be up (make dev-up).
+# Uses Docker so no k6 installation needed.
+
+load-test:
+	@echo "==> Running k6 load test against SecureShip (2 min)..."
+	@echo "    Stages: ramp-up → steady (50 VUs) → spike (120 VUs) → ramp-down"
+	@echo "    SLO thresholds: p95 latency < 500ms, error rate < 1%"
+	@docker run --rm \
+		--network observeops_observeops \
+		-v "$(PWD)/scripts:/scripts" \
+		grafana/k6 run /scripts/load-test.js \
+		--env BASE_URL=http://secureship:8001
+	@echo "==> Load test complete. Check Grafana for latency + throughput graphs."
 
 # ─── Chaos Engineering ────────────────────────────────────────────────────────
 # Kill a service and verify alerting fires + service recovers automatically.

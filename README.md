@@ -360,8 +360,32 @@ make infra-down  # stops billing (keeps Route53 zone — ~₹42/month idle)
 
 ---
 
+## Cost (FinOps)
+
+Infrastructure is torn down when not in use. When running, the full stack costs:
+
+| Resource | Type | Cost/month |
+|---|---|---|
+| EC2 App Server | t3.small | ~$15 |
+| EC2 Observability Server | t3.small | ~$15 |
+| ALB | per LCU | ~$20 |
+| NAT Gateway | per GB | ~$35 |
+| DynamoDB | on-demand | ~$1 |
+| Route53 | hosted zone | ~$0.50 |
+| ECR | image storage | ~$1 |
+| Lambda | free tier | ~$0 |
+| **Total** | | **~$87/month** |
+
+Cost optimisation decisions made:
+- **t3.small over t3.medium** — sufficient for demo traffic, saves $30/month
+- **On-demand DynamoDB over provisioned** — traffic is too unpredictable to reserve capacity cost-effectively at this scale
+- **Infra torn down when idle** — NAT Gateway is the dominant cost driver; destroying it when not needed saves ~$35/month
+- **Spot instances in K8s manifests** — EKS node group uses spot for 60-70% cost reduction
+
+---
+
 ## Note on live demo
 
-**secureship.click is live on-demand.** AWS infrastructure (EC2, ALB, NAT Gateway) is torn down when not in use to avoid ~$85/month in idle costs. Run `make infra-up` to provision from scratch in ~10 minutes, or run `make dev-up` locally — no AWS account required (DynamoDB falls back to in-memory, Groq API key is the only requirement).
+**secureship.click is live on-demand.** AWS infrastructure (EC2, ALB, NAT Gateway) is torn down when not in use to avoid ~$87/month in idle costs. Run `make infra-up` to provision from scratch in ~10 minutes, or run `make dev-up` locally — no AWS account required (DynamoDB falls back to in-memory, Groq API key is the only requirement).
 
 To request a live demo: open an issue on this repo or reach out directly.

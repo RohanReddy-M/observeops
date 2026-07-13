@@ -160,7 +160,7 @@ jobs:
       # TruffleHog scans git commits for secrets (API keys, passwords, tokens).
       # It compares HEAD to the default branch — catches secrets in new commits.
       - name: TruffleHog secret scan
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@v3.88.21
         with:
           path: ./
           base: ${{ github.event.before }}
