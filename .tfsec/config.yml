@@ -1,0 +1,39 @@
+# tfsec accepted deviations for ObserveOps
+#
+# Every exclusion below has a documented reason.
+# "soft_fail: true" is set in CI so findings are visible but non-blocking.
+# In a production team environment, these would require security team sign-off.
+
+exclude:
+  # ALB security group allows 0.0.0.0/0 inbound on 443/80.
+  # ACCEPTED: The ALB is the public entry point by design. All EC2 instances
+  # are in private subnets with no public IPs — only the ALB is exposed.
+  # The attack surface is: internet → ALB (TLS) → EC2 (private subnet only).
+  - aws-ec2-no-public-ingress-sgr
+
+  # Public subnets have map_public_ip_on_launch = false for EC2.
+  # The ALB itself requires a public subnet — this is standard ALB architecture.
+  # ACCEPTED: EC2 auto-assign public IP is disabled in compute module.
+  - aws-vpc-no-public-ip-subnet
+
+  # VPC flow logs not enabled.
+  # ACCEPTED: Flow logs cost ~$0.50/GB ingested. For a demo project that spins
+  # up and down, this adds variable cost with low security benefit. In a
+  # production environment with compliance requirements, flow logs would be
+  # mandatory. CloudTrail covers API-level audit; flow logs would add packet-level.
+  - aws-vpc-require-vpc-flow-logs-for-all-vpcs
+
+  # Security group egress allows all traffic (0.0.0.0/0).
+  # ACCEPTED: EC2 instances need outbound internet for: ECR image pulls,
+  # SSM Session Manager (control plane), package updates, Groq API calls.
+  # Restricting egress per-port would break SSM and ECR without a VPC endpoint.
+  # VPC endpoints for SSM/ECR/S3 cost ~$21/month each — not justified at this scale.
+  - aws-ec2-no-public-egress-sgr
+
+  # CloudTrail not explicitly provisioned as a Terraform resource.
+  # ACCEPTED: CloudTrail is enabled via the AWS console for the account and
+  # consumed by the Lambda audit_alerter (CloudTrail → EventBridge → Lambda → Slack).
+  # Adding it to Terraform would require an S3 bucket for log delivery, adding
+  # ~$5/month and complexity. The monitoring is real; the IaC representation is manual.
+  - aws-cloudtrail-enable-all-regions
+  - aws-cloudtrail-ensure-cloudwatch-integration
