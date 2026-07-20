@@ -126,6 +126,11 @@ services:
       - secureship
       - statusservice
       - ragservice
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     deploy:
       resources:
         limits:
@@ -244,6 +249,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/log:/var/log:ro
     command: -config.file=/etc/promtail/config.yml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9080/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     deploy:
       resources:
         limits:
@@ -299,6 +309,11 @@ services:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
       - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - observeops
     restart: unless-stopped
@@ -346,6 +361,11 @@ services:
       - "3200:3200"   # Tempo HTTP API
       - "4317:4317"   # OTLP gRPC receiver
       - "4318:4318"   # OTLP HTTP receiver
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3200/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - observeops
     restart: unless-stopped
@@ -365,6 +385,11 @@ services:
       - "8888:8888"   # Collector metrics
     depends_on:
       - tempo
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:13133"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - observeops
     restart: unless-stopped
