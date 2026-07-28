@@ -28,7 +28,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: secureship
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/secureship:8925870
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/secureship:c68e154
           ports:
             - containerPort: 8001
           securityContext:
