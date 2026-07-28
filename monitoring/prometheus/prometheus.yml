@@ -49,21 +49,20 @@ scrape_configs:
           service: 'prometheus'
 
   # ─── SecureShip ─────────────────────────────────────────────────────────────
-  # Prometheus hits http://secureship:8001/metrics every 15 seconds
-  # and stores all the metrics from our FastAPI app
+  # Prometheus runs on the obs server; SecureShip runs on the app server.
+  # Container DNS does not cross Docker hosts — use the app server private IP.
   - job_name: 'secureship'
     static_configs:
-      - targets: ['secureship:8001']
+      - targets: ['__APP_SERVER_IP__:8001']
         labels:
           service: 'secureship'
           team: 'backend'
-    # Path to scrape (default is /metrics, but we specify explicitly)
     metrics_path: '/metrics'
 
   # ─── StatusService ──────────────────────────────────────────────────────────
   - job_name: 'statusservice'
     static_configs:
-      - targets: ['statusservice:8002']
+      - targets: ['__APP_SERVER_IP__:8002']
         labels:
           service: 'statusservice'
           team: 'backend'
@@ -89,7 +88,7 @@ scrape_configs:
   # rag_queries_total, rag_documents_retrieved, vector_store_documents_total
   - job_name: 'ragservice'
     static_configs:
-      - targets: ['ragservice:8003']
+      - targets: ['__APP_SERVER_IP__:8003']
         labels:
           service: 'ragservice'
           team: 'ai'
@@ -104,7 +103,7 @@ scrape_configs:
   # ─── LLM Alert Autopilot ────────────────────────────────────────────────────
   - job_name: 'llm-alert-autopilot'
     static_configs:
-      - targets: ['llm-alert-autopilot:8080']
+      - targets: ['__APP_SERVER_IP__:8080']
         labels:
           service: 'llm-alert-autopilot'
           team: 'ai'
@@ -128,7 +127,7 @@ scrape_configs:
   # Catches trace pipeline issues before they silently drop data.
   - job_name: 'otel-collector'
     static_configs:
-      - targets: ['otel-collector:8888']
+      - targets: ['__APP_SERVER_IP__:8888']
         labels:
           service: 'otel-collector'
 
