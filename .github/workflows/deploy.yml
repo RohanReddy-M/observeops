@@ -383,6 +383,7 @@ jobs:
           git config user.name "GitHub Actions"
           git add kubernetes/apps/
           git diff --staged --quiet || git commit -m "chore: update K8s image tags to $TAG"
+          git pull --rebase origin main
           git push
 
   deploy-production:
