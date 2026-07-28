@@ -87,19 +87,28 @@ receivers:
   # Runs in the same Docker network so it can reach Loki directly.
   - name: 'llm-autopilot'
     webhook_configs:
-      - url: 'http://llm-alert-autopilot:8080/webhook'
+      # Use app server IP — AlertManager runs on obs server so container name
+      # llm-alert-autopilot does not resolve across the Docker network boundary.
+      - url: 'http://10.0.3.167:8080/webhook'
         send_resolved: false
 
-  # Lambda Incident Analyzer: POST to the Lambda Function URL for every firing alert.
-  # Lambda calls RAGService, publishes SNS summary, returns AI diagnosis.
-  # deploy.sh injects the real URL from SSM (/observeops/lambda-function-url).
-  # Lambda and Slack receivers below are no-ops locally — real URLs are injected
-  # by deploy.sh from SSM in production. Defined here so routing rules are valid.
   - name: 'lambda-incident-analyzer'
 
   - name: 'slack-critical'
+    slack_configs:
+      - api_url: '__SLACK_WEBHOOK_CRITICAL__'
+        channel: '#alerts-critical'
+        title: 'CRITICAL — {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+        send_resolved: true
 
   - name: 'slack-warnings'
+    slack_configs:
+      - api_url: '__SLACK_WEBHOOK_WARNINGS__'
+        channel: '#alerts-warnings'
+        title: 'WARNING — {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+        send_resolved: true
 
 # ─── Inhibition Rules ─────────────────────────────────────────────────────────
 # Inhibition suppresses certain alerts when other alerts are firing.
