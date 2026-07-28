@@ -203,7 +203,11 @@ OBS_IP="${OBS_SERVER_IP:-$(aws ssm get-parameter \
 git -C "$APP_DIR" checkout HEAD -- nginx/nginx.conf
 
 if [ -n "$OBS_IP" ]; then
-    sed -i "s|__OBS_SERVER_IP__|${OBS_IP}|g" "$APP_DIR/nginx/nginx.conf"
+    # Write via cat > (not sed -i) to preserve the inode Docker has bind-mounted.
+    # sed -i replaces the inode; Docker's bind mount then points to the old orphaned
+    # inode and nginx never sees the new content even after reload.
+    sed "s|__OBS_SERVER_IP__|${OBS_IP}|g" "$APP_DIR/nginx/nginx.conf" > /tmp/nginx_injected.conf
+    cat /tmp/nginx_injected.conf > "$APP_DIR/nginx/nginx.conf"
     log_info "Obs server IP injected: ${OBS_IP} ✓"
 else
     log_warning "Obs server IP not found in SSM — Grafana/Prometheus proxy will not work"
@@ -270,7 +274,11 @@ docker compose -f "$APP_DIR/docker-compose.yml" up -d otel-collector llm-alert-a
 # are registered in Docker DNS to prevent "host not found" crash loop.
 sleep 3
 log_info "Starting nginx..."
-docker compose -f "$APP_DIR/docker-compose.yml" up -d nginx
+# --force-recreate ensures nginx restarts and re-establishes its bind mount to
+# nginx/nginx.conf. git checkout earlier in this script replaces the file's
+# inode; without force-recreate Docker keeps the old inode and nginx never sees
+# the injected obs server IP.
+docker compose -f "$APP_DIR/docker-compose.yml" up -d --force-recreate nginx
 
 # ─── Post-Deploy Smoke Tests ──────────────────────────────────────────────────
 # Smoke tests verify the deployment didn't break basic functionality.
