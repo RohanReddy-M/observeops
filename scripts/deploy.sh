@@ -275,7 +275,25 @@ else
     log_warning "Obs server IP not found — otel-collector will fail to export traces"
 fi
 
-log_info "Writing obs-side service URLs to .env..."
+log_info "Refreshing secrets in .env..."
+# Re-read GROQ_API_KEY from SSM on every deploy so a transient SSM failure
+# at first-boot (user_data) doesn't leave the key missing indefinitely.
+GROQ_KEY=$(aws ssm get-parameter \
+    --name "/observeops/production/groq_api_key" \
+    --region "$AWS_REGION" \
+    --with-decryption \
+    --query "Parameter.Value" \
+    --output text 2>/dev/null || echo "")
+
+touch "$APP_DIR/.env"
+if [ -n "$GROQ_KEY" ]; then
+    sed -i '/^GROQ_API_KEY=/d' "$APP_DIR/.env"
+    echo "GROQ_API_KEY=${GROQ_KEY}" >> "$APP_DIR/.env"
+    log_info "GROQ_API_KEY refreshed ✓"
+else
+    log_warning "GROQ_API_KEY not found in SSM — LLM diagnosis will be disabled"
+fi
+
 if [ -n "$OBS_IP" ]; then
     # Remove any existing entries then append updated values so llm-alert-autopilot
     # can reach Loki and Grafana on the obs server (container names don't resolve cross-host).
