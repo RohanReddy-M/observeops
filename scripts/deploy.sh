@@ -59,6 +59,12 @@ for secret in "slack_webhook_critical" "lambda_incident_url" "groq_api_key"; do
     fi
 done
 
+# Remove unused Docker images before checking disk space.
+# 200+ CI runs each pull new images — without this the 20GB root volume fills
+# in a few weeks and every subsequent deploy fails the 2GB free check.
+log_info "Pruning unused Docker images..."
+docker image prune -a -f 2>/dev/null || true
+
 # Verify disk space — need at least 2GB free to pull/build images
 AVAILABLE_KB=$(df /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}' || df / | awk 'NR==2 {print $4}')
 if [ -n "$AVAILABLE_KB" ] && [ "$AVAILABLE_KB" -lt 2097152 ]; then
