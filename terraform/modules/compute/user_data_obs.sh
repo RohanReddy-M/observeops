@@ -77,7 +77,7 @@ sed -i "s|__LLM_AUTOPILOT_WEBHOOK__|http://$${APP_IP}:8080/webhook|g" /opt/obser
 
 # ── Start Monitoring Services ─────────────────────────────────────────────────
 cd /opt/observeops
-sudo -u ubuntu docker compose up -d prometheus grafana loki promtail alertmanager node-exporter
+sudo -u ubuntu docker compose up -d prometheus grafana loki promtail alertmanager node-exporter tempo
 
 # ── Systemd Service for Auto-Start ───────────────────────────────────────────
 cat > /etc/systemd/system/observeops-monitoring.service <<'UNIT'
@@ -90,8 +90,8 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/observeops
-ExecStart=/usr/bin/docker compose up -d prometheus grafana loki promtail alertmanager node-exporter
-ExecStop=/usr/bin/docker compose stop prometheus grafana loki promtail alertmanager node-exporter
+ExecStart=/usr/bin/docker compose up -d prometheus grafana loki promtail alertmanager node-exporter tempo
+ExecStop=/usr/bin/docker compose stop prometheus grafana loki promtail alertmanager node-exporter tempo
 User=ubuntu
 Group=ubuntu
 

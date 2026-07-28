@@ -417,9 +417,22 @@ jobs:
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.build-push.outputs.image-tag }}
-          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          INSTANCE_ID_FALLBACK: ${{ secrets.EC2_INSTANCE_ID }}
           OBS_IP_FALLBACK: ${{ secrets.OBS_SERVER_IP }}
         run: |
+          # Look up app server instance ID by tag — auto-discovers new instance after
+          # terraform destroy+apply so EC2_INSTANCE_ID secret never needs manual updating.
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --region ${{ env.AWS_REGION }} \
+            --filters "Name=tag:Name,Values=observeops-app-server" \
+                      "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text 2>/dev/null || echo "")
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "⚠ Tag lookup failed — using EC2_INSTANCE_ID secret as fallback"
+            INSTANCE_ID="$INSTANCE_ID_FALLBACK"
+          fi
+
           # Read obs server IP from SSM using CI runner's OIDC credentials (full access).
           # Falls back to the GitHub secret if SSM is unavailable (e.g. infra not yet ready).
           OBS_SERVER_IP=$(aws ssm get-parameter \
@@ -436,11 +449,13 @@ jobs:
 
           # Single SSM command — sets env vars inline and runs deploy.sh as ubuntu.
           # Avoids the heredoc approach which breaks because SSM \n stays literal.
+          # Files reset before git pull: deploy.sh injects real values into these on
+          # every run (sed/cat), leaving them dirty; pull would abort without the reset.
           COMMAND_ID=$(aws ssm send-command \
             --region ${{ env.AWS_REGION }} \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"runuser -l ubuntu -c 'git config --global --add safe.directory /opt/observeops; cd /opt/observeops && git checkout -- monitoring/alertmanager/alertmanager.yml nginx/nginx.conf 2>/dev/null || true && git pull; export ECR_REGISTRY=$REGISTRY; export IMAGE_TAG=$TAG; export APP_DIR=/opt/observeops; export AWS_REGION=${{ env.AWS_REGION }}; export OBS_SERVER_IP=$OBS_SERVER_IP; bash /opt/observeops/scripts/deploy.sh'\"],executionTimeout=[\"600\"]" \
+            --parameters "commands=[\"runuser -l ubuntu -c 'git config --global --add safe.directory /opt/observeops; cd /opt/observeops && git checkout -- monitoring/alertmanager/alertmanager.yml nginx/nginx.conf monitoring/otel/otel-collector.yaml 2>/dev/null || true && git pull; export ECR_REGISTRY=$REGISTRY; export IMAGE_TAG=$TAG; export APP_DIR=/opt/observeops; export AWS_REGION=${{ env.AWS_REGION }}; export OBS_SERVER_IP=$OBS_SERVER_IP; bash /opt/observeops/scripts/deploy.sh'\"],executionTimeout=[\"600\"]" \
             --query "Command.CommandId" --output text)
           echo "SSM command ID: $COMMAND_ID"
 

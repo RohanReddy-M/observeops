@@ -264,11 +264,34 @@ else
     log_warning "Slack warnings webhook not in SSM — #alerts-warnings will not receive messages"
 fi
 
+log_info "Injecting obs server IP into OTel Collector config..."
+git -C "$APP_DIR" checkout HEAD -- monitoring/otel/otel-collector.yaml
+
+if [ -n "$OBS_IP" ]; then
+    sed "s|__OBS_SERVER_IP__|${OBS_IP}|g" "$APP_DIR/monitoring/otel/otel-collector.yaml" > /tmp/otel_injected.yaml
+    cat /tmp/otel_injected.yaml > "$APP_DIR/monitoring/otel/otel-collector.yaml"
+    log_info "OTel Collector Tempo endpoint set to ${OBS_IP}:4317 ✓"
+else
+    log_warning "Obs server IP not found — otel-collector will fail to export traces"
+fi
+
+log_info "Writing obs-side service URLs to .env..."
+if [ -n "$OBS_IP" ]; then
+    # Remove any existing entries then append updated values so llm-alert-autopilot
+    # can reach Loki and Grafana on the obs server (container names don't resolve cross-host).
+    sed -i '/^LOKI_URL=/d; /^GRAFANA_URL=/d' "$APP_DIR/.env" 2>/dev/null || true
+    echo "LOKI_URL=http://${OBS_IP}:3100" >> "$APP_DIR/.env"
+    echo "GRAFANA_URL=http://${OBS_IP}:3000" >> "$APP_DIR/.env"
+    log_info "LOKI_URL and GRAFANA_URL written to .env ✓"
+fi
+
 log_info "Starting app-server-only monitoring services..."
 # Prometheus, Grafana, Loki, AlertManager run on the OBS SERVER — not here.
 # The app server only runs: OTel Collector (receives traces, forwards to Tempo on obs server)
 # and LLM Alert Autopilot (receives AlertManager webhooks, calls Groq, posts to Slack).
-docker compose -f "$APP_DIR/docker-compose.yml" up -d otel-collector llm-alert-autopilot
+# --force-recreate: otel-collector config was just rewritten above; container must restart
+# to pick up the new Tempo endpoint. llm-alert-autopilot needs LOKI_URL/GRAFANA_URL from .env.
+docker compose -f "$APP_DIR/docker-compose.yml" up -d --force-recreate otel-collector llm-alert-autopilot
 
 # nginx resolves upstream hostnames at startup — start it after app containers
 # are registered in Docker DNS to prevent "host not found" crash loop.

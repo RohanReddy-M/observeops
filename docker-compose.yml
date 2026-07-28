@@ -335,8 +335,10 @@ services:
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
-      - LOKI_URL=http://loki:3100
-      - GRAFANA_URL=http://grafana:3000
+      # On the app server Loki/Grafana run on the obs server (different host).
+      # deploy.sh writes the real obs IP to .env; local dev falls back to container names.
+      - LOKI_URL=${LOKI_URL:-http://loki:3100}
+      - GRAFANA_URL=${GRAFANA_URL:-http://grafana:3000}
       - GRAFANA_PASSWORD=${GRAFANA_PASSWORD:-observeops123}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
