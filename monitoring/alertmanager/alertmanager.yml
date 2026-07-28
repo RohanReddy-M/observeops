@@ -87,9 +87,9 @@ receivers:
   # Runs in the same Docker network so it can reach Loki directly.
   - name: 'llm-autopilot'
     webhook_configs:
-      # Use app server IP — AlertManager runs on obs server so container name
-      # llm-alert-autopilot does not resolve across the Docker network boundary.
-      - url: 'http://10.0.3.167:8080/webhook'
+      # Placeholder replaced at deploy time with the app server private IP.
+      # AlertManager runs on obs server — container name won't resolve cross-host.
+      - url: '__LLM_AUTOPILOT_WEBHOOK__'
         send_resolved: false
 
   - name: 'lambda-incident-analyzer'
