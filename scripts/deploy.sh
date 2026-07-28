@@ -194,11 +194,11 @@ done
 log_info "Ingested ${INGESTED} chunks from runbooks into RAGService ✓"
 
 log_info "Injecting obs server IP into nginx config..."
-OBS_IP=$(aws ssm get-parameter \
+OBS_IP="${OBS_SERVER_IP:-$(aws ssm get-parameter \
     --name "/observeops/production/obs_server_ip" \
     --region "$AWS_REGION" \
     --query "Parameter.Value" \
-    --output text 2>/dev/null || echo "")
+    --output text 2>/dev/null || echo "")}"
 
 git -C "$APP_DIR" checkout HEAD -- nginx/nginx.conf
 

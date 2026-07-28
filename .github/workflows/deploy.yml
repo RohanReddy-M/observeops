@@ -417,6 +417,7 @@ jobs:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.build-push.outputs.image-tag }}
           INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          OBS_SERVER_IP: ${{ secrets.OBS_SERVER_IP }}
         run: |
           echo "Deploying $TAG to $INSTANCE_ID"
 
@@ -426,7 +427,7 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"cat > /tmp/ci_deploy.sh << 'DEPLOY_EOF'\n#!/bin/bash\nset -e\ngit config --global --add safe.directory /opt/observeops\ncd /opt/observeops && git pull\nexport ECR_REGISTRY=$REGISTRY\nexport IMAGE_TAG=$TAG\nexport APP_DIR=/opt/observeops\nexport AWS_REGION=${{ env.AWS_REGION }}\nbash /opt/observeops/scripts/deploy.sh\nDEPLOY_EOF\nchmod +x /tmp/ci_deploy.sh\"]" \
+            --parameters "commands=[\"cat > /tmp/ci_deploy.sh << 'DEPLOY_EOF'\n#!/bin/bash\nset -e\ngit config --global --add safe.directory /opt/observeops\ncd /opt/observeops && git pull\nexport ECR_REGISTRY=$REGISTRY\nexport IMAGE_TAG=$TAG\nexport APP_DIR=/opt/observeops\nexport AWS_REGION=${{ env.AWS_REGION }}\nexport OBS_SERVER_IP=$OBS_SERVER_IP\nbash /opt/observeops/scripts/deploy.sh\nDEPLOY_EOF\nchmod +x /tmp/ci_deploy.sh\"]" \
             --query "Command.CommandId" --output text)
           sleep 5
 
