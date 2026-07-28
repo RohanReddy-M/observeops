@@ -440,7 +440,7 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"runuser -l ubuntu -c 'git config --global --add safe.directory /opt/observeops; cd /opt/observeops && git pull; export ECR_REGISTRY=$REGISTRY; export IMAGE_TAG=$TAG; export APP_DIR=/opt/observeops; export AWS_REGION=${{ env.AWS_REGION }}; export OBS_SERVER_IP=$OBS_SERVER_IP; bash /opt/observeops/scripts/deploy.sh'\"],executionTimeout=[\"600\"]" \
+            --parameters "commands=[\"runuser -l ubuntu -c 'git config --global --add safe.directory /opt/observeops; cd /opt/observeops && git checkout -- monitoring/alertmanager/alertmanager.yml nginx/nginx.conf 2>/dev/null || true && git pull; export ECR_REGISTRY=$REGISTRY; export IMAGE_TAG=$TAG; export APP_DIR=/opt/observeops; export AWS_REGION=${{ env.AWS_REGION }}; export OBS_SERVER_IP=$OBS_SERVER_IP; bash /opt/observeops/scripts/deploy.sh'\"],executionTimeout=[\"600\"]" \
             --query "Command.CommandId" --output text)
           echo "SSM command ID: $COMMAND_ID"
 
