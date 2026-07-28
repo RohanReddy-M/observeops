@@ -24,6 +24,12 @@ usermod -aG docker ubuntu
 systemctl enable docker
 systemctl start docker
 
+# ── AWS CLI v2 ────────────────────────────────────────────────────────────────
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp/
+/tmp/aws/install
+rm -rf /tmp/awscliv2.zip /tmp/aws
+
 # ── Directory Structure ───────────────────────────────────────────────────────
 mkdir -p /opt/observeops
 mkdir -p /var/log/observeops
@@ -35,14 +41,11 @@ git clone https://github.com/RohanReddy-M/observeops.git .
 chown -R ubuntu:ubuntu /opt/observeops
 
 # ── Point Prometheus at the App Server ───────────────────────────────────────
-# In docker-compose, services find each other by container name.
-# On EC2, the app services are on a DIFFERENT machine, so we replace
-# container names with the actual private IP of the app server.
+# prometheus.yml uses __APP_SERVER_IP__ placeholders for targets that live on
+# the app server. Replace them with the actual private IP passed from Terraform.
 APP_IP="${app_server_ip}"
 
-sed -i "s/secureship:8001/$${APP_IP}:8001/g"   /opt/observeops/monitoring/prometheus/prometheus.yml
-sed -i "s/statusservice:8002/$${APP_IP}:8002/g" /opt/observeops/monitoring/prometheus/prometheus.yml
-sed -i "s/ragservice:8003/$${APP_IP}:8003/g"    /opt/observeops/monitoring/prometheus/prometheus.yml
+sed -i "s|__APP_SERVER_IP__|$${APP_IP}|g" /opt/observeops/monitoring/prometheus/prometheus.yml
 
 # ── Inject AlertManager Config ────────────────────────────────────────────────
 # Replace placeholder URLs with real values from SSM and from Terraform variables
@@ -66,14 +69,11 @@ LAMBDA_URL=$(aws ssm get-parameter \
   --query 'Parameter.Value' \
   --output text 2>/dev/null || echo "http://localhost:9999/unused")
 
-[ -n "$SLACK_CRITICAL" ] && sed -i "s|__SLACK_WEBHOOK_CRITICAL__|$${SLACK_CRITICAL}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
-[ -n "$SLACK_WARNINGS" ] && sed -i "s|__SLACK_WEBHOOK_WARNINGS__|$${SLACK_WARNINGS}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
-sed -i "s|__LAMBDA_FUNCTION_URL__|$${LAMBDA_URL}|g"   /opt/observeops/monitoring/alertmanager/alertmanager.yml
-sed -i "s|__SLACK_WEBHOOK_CRITICAL__|http://localhost:9999/unused|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
-sed -i "s|__SLACK_WEBHOOK_WARNINGS__|http://localhost:9999/unused|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
-
-# LLM Autopilot runs on the app server — replace container name with real IP
-sed -i "s|http://llm-alert-autopilot:8080|http://$${APP_IP}:8080|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+sed -i "s|__SLACK_WEBHOOK_CRITICAL__|$${SLACK_CRITICAL:-http://localhost:9999/unused}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+sed -i "s|__SLACK_WEBHOOK_WARNINGS__|$${SLACK_WARNINGS:-http://localhost:9999/unused}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+sed -i "s|__LAMBDA_FUNCTION_URL__|$${LAMBDA_URL}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+# LLM Autopilot webhook: alertmanager runs on obs server, autopilot on app server
+sed -i "s|__LLM_AUTOPILOT_WEBHOOK__|http://$${APP_IP}:8080/webhook|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
 
 # ── Start Monitoring Services ─────────────────────────────────────────────────
 cd /opt/observeops
