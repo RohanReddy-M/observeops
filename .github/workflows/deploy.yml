@@ -417,8 +417,20 @@ jobs:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.build-push.outputs.image-tag }}
           INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
-          OBS_SERVER_IP: ${{ secrets.OBS_SERVER_IP }}
+          OBS_IP_FALLBACK: ${{ secrets.OBS_SERVER_IP }}
         run: |
+          # Read obs server IP from SSM using CI runner's OIDC credentials (full access).
+          # Falls back to the GitHub secret if SSM is unavailable (e.g. infra not yet ready).
+          OBS_SERVER_IP=$(aws ssm get-parameter \
+            --name "/observeops/production/obs_server_ip" \
+            --region ${{ env.AWS_REGION }} \
+            --query "Parameter.Value" \
+            --output text 2>/dev/null || echo "")
+          if [ -z "$OBS_SERVER_IP" ]; then
+            echo "⚠ SSM read failed — using OBS_SERVER_IP secret as fallback"
+            OBS_SERVER_IP="$OBS_IP_FALLBACK"
+          fi
+          echo "Obs server IP: $OBS_SERVER_IP"
           echo "Deploying $TAG to $INSTANCE_ID"
 
           # Step 1: write a self-contained deploy script to the EC2.
