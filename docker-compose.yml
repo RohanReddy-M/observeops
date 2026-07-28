@@ -159,7 +159,7 @@ services:
       - '--storage.tsdb.retention.time=15d'
       - '--web.enable-lifecycle'
       - '--web.external-url=https://secureship.click/prometheus/'
-      - '--web.route-prefix=/'
+      - '--web.route-prefix=/prometheus/'
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
       interval: 30s
@@ -187,6 +187,7 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=observeops123
       - GF_SERVER_ROOT_URL=https://secureship.click/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - grafana_data:/var/lib/grafana
       # provisioning/ contains datasource + dashboard provider YAML configs
