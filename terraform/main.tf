@@ -146,6 +146,7 @@ locals {
 resource "aws_ecr_repository" "ragservice" {
   name                 = "${var.project_name}/ragservice"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
   image_scanning_configuration { scan_on_push = true }
   tags = local.common_tags
 }
@@ -157,8 +158,8 @@ resource "aws_ecr_repository" "ragservice" {
 resource "aws_ecr_repository" "secureship" {
   name                 = "${var.project_name}/secureship"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
-  # Scan images for known vulnerabilities automatically on push
   image_scanning_configuration {
     scan_on_push = true
   }
@@ -169,6 +170,7 @@ resource "aws_ecr_repository" "secureship" {
 resource "aws_ecr_repository" "statusservice" {
   name                 = "${var.project_name}/statusservice"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -180,6 +182,7 @@ resource "aws_ecr_repository" "statusservice" {
 resource "aws_ecr_repository" "llm_alert_autopilot" {
   name                 = "${var.project_name}/llm-alert-autopilot"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
