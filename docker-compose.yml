@@ -156,8 +156,10 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=15d'    # Keep 15 days of metrics
-      - '--web.enable-lifecycle'               # Allows hot-reload of config
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.external-url=https://secureship.click/prometheus/'
+      - '--web.route-prefix=/'
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
       interval: 30s
@@ -185,7 +187,6 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=observeops123
       - GF_SERVER_ROOT_URL=https://secureship.click/grafana/
-      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - grafana_data:/var/lib/grafana
       # provisioning/ contains datasource + dashboard provider YAML configs
