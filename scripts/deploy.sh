@@ -295,12 +295,14 @@ else
 fi
 
 if [ -n "$OBS_IP" ]; then
-    # Remove any existing entries then append updated values so llm-alert-autopilot
-    # can reach Loki and Grafana on the obs server (container names don't resolve cross-host).
-    sed -i '/^LOKI_URL=/d; /^GRAFANA_URL=/d' "$APP_DIR/.env" 2>/dev/null || true
+    # Remove any existing entries then append updated values.
+    # LOKI_HOST: used by promtail (-config.expand-env=true) to ship app server logs cross-host.
+    # LOKI_URL/GRAFANA_URL: used by llm-alert-autopilot to query Loki and Grafana.
+    sed -i '/^LOKI_HOST=/d; /^LOKI_URL=/d; /^GRAFANA_URL=/d' "$APP_DIR/.env" 2>/dev/null || true
+    echo "LOKI_HOST=${OBS_IP}" >> "$APP_DIR/.env"
     echo "LOKI_URL=http://${OBS_IP}:3100" >> "$APP_DIR/.env"
     echo "GRAFANA_URL=http://${OBS_IP}:3000" >> "$APP_DIR/.env"
-    log_info "LOKI_URL and GRAFANA_URL written to .env ✓"
+    log_info "LOKI_HOST, LOKI_URL and GRAFANA_URL written to .env ✓"
 fi
 
 log_info "Starting app-server-only monitoring services..."
@@ -309,7 +311,7 @@ log_info "Starting app-server-only monitoring services..."
 # and LLM Alert Autopilot (receives AlertManager webhooks, calls Groq, posts to Slack).
 # --force-recreate: otel-collector config was just rewritten above; container must restart
 # to pick up the new Tempo endpoint. llm-alert-autopilot needs LOKI_URL/GRAFANA_URL from .env.
-docker compose -f "$APP_DIR/docker-compose.yml" up -d --force-recreate otel-collector llm-alert-autopilot
+docker compose -f "$APP_DIR/docker-compose.yml" up -d --force-recreate otel-collector llm-alert-autopilot promtail
 
 # nginx resolves upstream hostnames at startup — start it after app containers
 # are registered in Docker DNS to prevent "host not found" crash loop.

@@ -251,7 +251,11 @@ services:
       # Mount Docker socket so Promtail can read container logs
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/log:/var/log:ro
-    command: -config.file=/etc/promtail/config.yml
+    environment:
+      # Overridden in .env on the app server (where loki container name won't resolve).
+      # deploy.sh writes LOKI_HOST=<obs_private_ip> so logs ship cross-host.
+      - LOKI_HOST=${LOKI_HOST:-loki}
+    command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9080/ready"]
       interval: 30s
@@ -379,7 +383,7 @@ services:
   # Receives traces from instrumented apps (secureship, ragservice) via OTLP
   # and forwards them to Tempo for storage.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.115.0
     container_name: otel-collector
     command: ["--config=/etc/otel-collector.yaml"]
     volumes:

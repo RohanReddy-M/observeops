@@ -87,7 +87,9 @@ chown ubuntu:ubuntu /opt/observeops/.env
 # The observability services run on the other server.
 # Here we only start what serves user traffic.
 cd /opt/observeops
-sudo -u ubuntu docker compose up -d secureship statusservice ragservice nginx llm-alert-autopilot
+# promtail starts here but will use container name 'loki' until the first CI deploy
+# injects LOKI_HOST=<obs_private_ip> into .env and force-recreates the container.
+sudo -u ubuntu docker compose up -d secureship statusservice ragservice nginx llm-alert-autopilot promtail
 
 # ── Systemd Service for Auto-Start ───────────────────────────────────────────
 # Without this, if the instance reboots, Docker starts but containers don't.
@@ -102,8 +104,8 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/observeops
-ExecStart=/usr/bin/docker compose up -d secureship statusservice ragservice nginx llm-alert-autopilot
-ExecStop=/usr/bin/docker compose stop secureship statusservice ragservice nginx llm-alert-autopilot
+ExecStart=/usr/bin/docker compose up -d secureship statusservice ragservice nginx llm-alert-autopilot promtail
+ExecStop=/usr/bin/docker compose stop secureship statusservice ragservice nginx llm-alert-autopilot promtail
 User=ubuntu
 Group=ubuntu
 

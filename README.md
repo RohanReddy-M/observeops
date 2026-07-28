@@ -19,9 +19,9 @@ Live at **[secureship.click](https://secureship.click)** · [Run locally in 2 mi
 
 **Grafana dashboards: SLO/Error Budget · DORA Metrics**
 
-![SLO and Error Budget Dashboard](docs/screenshots/grafana-slo.png)
+![SLO and Error Budget Dashboard](docs/screenshots/grafana-slo.jpeg)
 
-![DORA Metrics Dashboard](docs/screenshots/grafana-dora.png)
+![DORA Metrics Dashboard](docs/screenshots/grafana-dora.jpeg)
 
 ---
 
@@ -32,7 +32,7 @@ Live at **[secureship.click](https://secureship.click)** · [Run locally in 2 mi
 | **~3 seconds** | alert fires → Slack diagnosis (AI autopilot) |
 | **~30 seconds** | CloudTrail security event → Slack notification (Lambda) |
 | **15 alert rules** | across 5 groups including LLM quality monitoring |
-| **4 Grafana dashboards** | Services, SLO/Error Budget, DORA Metrics, LLM Ops |
+| **5 Grafana dashboards** | Services, SLO/Error Budget, DORA Metrics, LLM Ops, Infrastructure |
 | **9 ADRs** | every major design decision documented with tradeoffs |
 | **3 services** | FastAPI + Flask + LangGraph RAG, all containerised |
 | **2 EC2 instances** | app and observability separated by design |
@@ -47,7 +47,7 @@ Live at **[secureship.click](https://secureship.click)** · [Run locally in 2 mi
 - **Chaos engineering that catches zombie recovery** — after an OOM kill the service restarts and the health check passes, but the in-memory FAISS index is empty and all queries return nothing. Basic uptime monitoring misses this. Caught by checking `vector_store_documents_total` after recovery
 - **DORA metrics tracked automatically** — deployment frequency, MTTR from resolved alerts, AI diagnosis success rate
 - **Deadman switch** — Watchdog alert proves the alerting pipeline itself is alive, not just the services it monitors
-- **8 Architecture Decision Records** documenting every major design choice with alternatives considered and rejected
+- **9 Architecture Decision Records** documenting every major design choice with alternatives considered and rejected
 
 ---
 
@@ -350,8 +350,8 @@ curl -X POST http://localhost:8003/ingest \
   -H "Content-Type: application/json" \
   -d '{"texts": ["When CPU is high, run: top -b -n1 | head -20 to identify the process. Then: docker stats to see container usage."]}'
 
-# Query the RAG agent
-curl -X POST http://localhost:8003/ai/query \
+# Query the RAG agent (direct to service; use /ai/query when going through nginx/ALB)
+curl -X POST http://localhost:8003/query \
   -H "Content-Type: application/json" \
   -d '{"question": "CPU is spiking on the app server, what do I do?"}'
 

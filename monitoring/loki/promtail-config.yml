@@ -17,7 +17,10 @@ positions:
 
 # ─── Where to send logs ───────────────────────────────────────────────────────
 clients:
-  - url: http://loki:3100/loki/api/v1/push
+  # LOKI_HOST defaults to 'loki' (container name) for the obs server and local dev
+  # where Loki is on the same Docker network. On the app server deploy.sh writes
+  # LOKI_HOST=<obs_private_ip> to .env so promtail can reach Loki cross-host.
+  - url: http://${LOKI_HOST:-loki}:3100/loki/api/v1/push
 
 # ─── What to collect ──────────────────────────────────────────────────────────
 scrape_configs:
