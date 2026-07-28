@@ -28,6 +28,11 @@ output "ecr_ragservice_url" {
   value       = aws_ecr_repository.ragservice.repository_url
 }
 
+output "ecr_llm_alert_autopilot_url" {
+  description = "ECR URL for LLM Alert Autopilot"
+  value       = aws_ecr_repository.llm_alert_autopilot.repository_url
+}
+
 output "alb_dns_name" {
   description = "ALB DNS name — hit this directly to test before DNS propagates"
   value       = module.alb.alb_dns_name

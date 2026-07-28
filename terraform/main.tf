@@ -177,6 +177,17 @@ resource "aws_ecr_repository" "statusservice" {
   tags = local.common_tags
 }
 
+resource "aws_ecr_repository" "llm_alert_autopilot" {
+  name                 = "${var.project_name}/llm-alert-autopilot"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.common_tags
+}
+
 # Auto-delete old images to control storage costs
 # Keep only the last 10 images per repository
 # ─── ALB + Route53 Module ────────────────────────────────────────────────────
@@ -265,5 +276,10 @@ resource "aws_ecr_lifecycle_policy" "statusservice" {
 
 resource "aws_ecr_lifecycle_policy" "ragservice" {
   repository = aws_ecr_repository.ragservice.name
+  policy     = local.ecr_lifecycle_policy
+}
+
+resource "aws_ecr_lifecycle_policy" "llm_alert_autopilot" {
+  repository = aws_ecr_repository.llm_alert_autopilot.name
   policy     = local.ecr_lifecycle_policy
 }
