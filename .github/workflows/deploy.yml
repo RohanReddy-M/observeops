@@ -284,10 +284,12 @@ jobs:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
+          docker pull "$REGISTRY/secureship:latest" 2>/dev/null && \
+            CACHE_FLAG="--cache-from $REGISTRY/secureship:latest" || CACHE_FLAG=""
           docker build \
             --tag "$REGISTRY/secureship:$TAG" \
             --tag "$REGISTRY/secureship:${{ github.ref_name }}" \
-            --cache-from "$REGISTRY/secureship:latest" \
+            $CACHE_FLAG \
             apps/secureship/
           
           docker push "$REGISTRY/secureship:$TAG"
@@ -318,10 +320,12 @@ jobs:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
+          docker pull "$REGISTRY/ragservice:latest" 2>/dev/null && \
+            CACHE_FLAG="--cache-from $REGISTRY/ragservice:latest" || CACHE_FLAG=""
           docker build \
             --tag "$REGISTRY/ragservice:$TAG" \
             --tag "$REGISTRY/ragservice:${{ github.ref_name }}" \
-            --cache-from "$REGISTRY/ragservice:latest" \
+            $CACHE_FLAG \
             apps/ragservice/
           docker push "$REGISTRY/ragservice:$TAG"
           docker push "$REGISTRY/ragservice:${{ github.ref_name }}"
