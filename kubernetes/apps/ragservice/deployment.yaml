@@ -14,7 +14,7 @@ spec:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
-      maxUnavailable: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
@@ -38,6 +38,7 @@ spec:
             - containerPort: 8003
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           resources:
@@ -47,18 +48,22 @@ spec:
             limits:
               cpu: "2000m"
               memory: "4Gi"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            failureThreshold: 20
+            periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /health
               port: 8003
-            initialDelaySeconds: 30
             periodSeconds: 15
-            failureThreshold: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: 8003
-            initialDelaySeconds: 60
             periodSeconds: 30
           env:
             - name: APP_ENV
@@ -68,9 +73,20 @@ spec:
                 secretKeyRef:
                   name: observeops-secrets
                   key: GROQ_API_KEY
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: observeops-config
+                  key: OBS_SERVER_OTLP_ENDPOINT
             # Create the secret before deploying:
             # kubectl create secret generic observeops-secrets \
             #   --from-literal=GROQ_API_KEY=<your-key> -n observeops
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

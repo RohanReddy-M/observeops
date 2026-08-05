@@ -32,6 +32,22 @@ kubectl create secret generic observeops-secrets \
   --namespace "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
 
+echo "==> Creating observeops-config (OTel endpoint)..."
+OBS_IP=$(aws ssm get-parameter \
+  --name "/observeops/production/obs_server_ip" \
+  --query "Parameter.Value" --output text 2>/dev/null || \
+  cd terraform && terraform output -raw obs_server_private_ip 2>/dev/null || echo "")
+if [ -z "$OBS_IP" ]; then
+  echo "  WARNING: Could not resolve obs server IP. OTel traces will not reach the collector."
+  echo "  Set OBS_SERVER_IP manually: kubectl create configmap observeops-config --from-literal=OBS_SERVER_OTLP_ENDPOINT=http://<obs-ip>:4317 -n $NAMESPACE"
+else
+  kubectl create configmap observeops-config \
+    --from-literal=OBS_SERVER_OTLP_ENDPOINT="http://${OBS_IP}:4317" \
+    --namespace "$NAMESPACE" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  echo "  OTel endpoint: http://${OBS_IP}:4317"
+fi
+
 echo "==> Installing ArgoCD..."
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -n argocd \

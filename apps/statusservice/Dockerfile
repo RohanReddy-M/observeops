@@ -10,13 +10,12 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 WORKDIR /app
 COPY --from=builder /install /usr/local
-COPY . .
-RUN chown -R appuser:appuser /app
+COPY --chown=appuser:appuser . .
 
 USER appuser
 EXPOSE 8002
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"
 
 # gunicorn is a production-grade WSGI server for Flask

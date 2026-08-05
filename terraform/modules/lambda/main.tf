@@ -38,6 +38,20 @@ resource "aws_iam_role_policy" "sns_publish" {
   })
 }
 
+resource "aws_iam_role_policy" "incident_analyzer_ssm" {
+  name = "ssm-read-webhook-secret"
+  role = aws_iam_role.incident_analyzer.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter"]
+      Resource = [aws_ssm_parameter.webhook_secret.arn]
+    }]
+  })
+}
+
 # Random shared secret injected into AlertManager config and validated by Lambda.
 # Prevents anyone who discovers the Function URL from triggering analysis.
 resource "random_password" "webhook_secret" {
@@ -88,9 +102,12 @@ resource "aws_lambda_function" "incident_analyzer" {
 
   environment {
     variables = {
-      RAGSERVICE_URL         = "https://${var.domain_name}/ai/query"
-      NOTIFICATION_TOPIC_ARN = aws_sns_topic.notifications.arn
-      WEBHOOK_SECRET         = random_password.webhook_secret.result
+      RAGSERVICE_URL              = "https://${var.domain_name}/ai/query"
+      NOTIFICATION_TOPIC_ARN      = aws_sns_topic.notifications.arn
+      # Pass the SSM parameter NAME, not the secret value.
+      # Lambda reads the actual secret from SSM at cold-start so it never
+      # appears in CloudTrail env-var logs or the Lambda console.
+      WEBHOOK_SECRET_PARAM        = aws_ssm_parameter.webhook_secret.name
     }
   }
 
@@ -174,6 +191,9 @@ resource "aws_iam_role_policy_attachment" "audit_alerter_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
 resource "aws_iam_role_policy" "audit_alerter_ssm" {
   name = "ssm-read-slack-webhook"
   role = aws_iam_role.audit_alerter.id
@@ -183,7 +203,26 @@ resource "aws_iam_role_policy" "audit_alerter_ssm" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["ssm:GetParameter"]
-      Resource = ["arn:aws:ssm:*:*:parameter/observeops/production/slack_webhook_critical"]
+      Resource = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/observeops/production/slack_webhook_critical"]
+    }]
+  })
+}
+
+resource "aws_sqs_queue" "audit_alerter_dlq" {
+  name                      = "${var.project_name}-audit-alerter-dlq"
+  message_retention_seconds = 1209600 # 14 days
+  tags                      = var.common_tags
+}
+
+resource "aws_iam_role_policy" "audit_alerter_dlq" {
+  name = "sqs-dlq"
+  role = aws_iam_role.audit_alerter.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage"]
+      Resource = [aws_sqs_queue.audit_alerter_dlq.arn]
     }]
   })
 }
@@ -196,6 +235,10 @@ resource "aws_lambda_function" "audit_alerter" {
   runtime          = "python3.12"
   source_code_hash = data.archive_file.audit_alerter.output_base64sha256
   timeout          = 30
+
+  dead_letter_config {
+    target_arn = aws_sqs_queue.audit_alerter_dlq.arn
+  }
 
   tags = var.common_tags
 }

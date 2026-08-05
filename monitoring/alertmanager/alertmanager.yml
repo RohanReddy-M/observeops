@@ -119,5 +119,8 @@ inhibit_rules:
       severity: 'critical'
     target_match:
       severity: 'warning'
-    # Inhibit warning if critical alert for same job is already firing
-    equal: ['alertname', 'job']
+    # If a critical alert fires for job X, suppress all warnings for job X.
+    # 'alertname' must NOT be in equal — source (ServiceDown) and target
+    # (HighErrorRate) have different names, so equal: ['alertname','job']
+    # would never match and the inhibition would silently never trigger.
+    equal: ['job']

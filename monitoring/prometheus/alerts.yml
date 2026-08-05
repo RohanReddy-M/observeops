@@ -28,9 +28,10 @@ groups:
           runbook_url: "https://github.com/RohanReddy-M/observeops/blob/main/docs/runbooks/service-down.md"
 
       - alert: ContainerRestartingFrequently
-        # kube_pod_container_status_restarts_total comes from kube-state-metrics (K8s)
-        # increase() over 15m counts restarts in that window
-        # Catches CrashLoopBackOff before Kubernetes gives up
+        # Requires kube-state-metrics deployed in the cluster.
+        # Deploy: helm install kube-state-metrics prometheus-community/kube-state-metrics -n monitoring
+        # kube_pod_container_status_restarts_total tracks cumulative restarts per container.
+        # increase() over 15m catches CrashLoopBackOff before Kubernetes gives up.
         expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
         for: 0m
         labels:
@@ -323,19 +324,22 @@ groups:
           description: "Only {{ $value | humanize }}% of the 216-minute monthly error budget remains. Avoid feature deploys. Investigate error sources in Grafana → SLO Dashboard."
 
       - alert: SecureShipBurnRateTooHigh
-        # Fires when we're consuming the error budget 14.4x faster than allowed.
-        # At this rate: 30-day budget exhausted in ~50 hours.
-        # Threshold of 14.4 comes from Google SRE Workbook multi-window burn rate model.
-        # This is the most important SLO alert — catches fast degradation before it
-        # shows up in monthly error budget calculations.
-        expr: slo:secureship_availability:burn_rate1h > 14.4
+        # Two-window burn rate alert (Google SRE Workbook §6.2).
+        # BOTH windows must exceed their thresholds before paging — this eliminates
+        # false positives from brief traffic spikes that inflate the 1h window alone.
+        # 1h > 14.4 AND 6h > 6:  fast burn — budget exhausted in ~50h  → page now
+        # Using AND means: sustained burn (confirmed by 6h), not a momentary spike.
+        expr: |
+          slo:secureship_availability:burn_rate1h > 14.4
+          and
+          slo:secureship_availability:burn_rate6h > 6
         for: 2m
         labels:
           severity: critical
           slo: "true"
         annotations:
-          summary: "SecureShip burn rate critical ({{ $value | humanize }}x — monthly budget in ~50h)"
-          description: "Error budget burn rate is {{ $value | humanize }}x. At this rate the monthly budget is exhausted in hours. Immediate action required."
+          summary: "SecureShip burn rate critical (1h: {{ $value | humanize }}x)"
+          description: "Error budget burning fast on both 1h and 6h windows. Monthly budget will be exhausted in hours. Check error rate and recent deploys immediately."
 
       - alert: RAGServiceSuccessSLOBreach
         expr: slo:ragservice_success:ratio_rate5m < 0.95

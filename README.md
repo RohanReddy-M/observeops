@@ -284,7 +284,7 @@ When an alert fires, the LLM diagnosis includes: *"High error rate started 8 min
 
 ### Architecture Decision Records
 
-Eight ADRs in `docs/adr/` document the reasoning behind every major design decision:
+Nine ADRs in `docs/adr/` document the reasoning behind every major design decision:
 
 | ADR | Decision |
 |---|---|

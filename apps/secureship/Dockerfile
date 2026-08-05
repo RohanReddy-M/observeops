@@ -30,13 +30,8 @@ WORKDIR /app
 # Copy installed packages from the builder stage
 COPY --from=builder /install /usr/local
 
-# Copy application code
-COPY . .
+COPY --chown=appuser:appuser . .
 
-# Change ownership of app files to our non-root user
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user for all subsequent commands
 USER appuser
 
 # Document which port the app listens on (doesn't actually open the port)
@@ -45,7 +40,7 @@ EXPOSE 8001
 
 # Health check: Docker will run this every 30s
 # If it fails 3 times, Docker marks the container as unhealthy
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"
 
 # Single worker: uvicorn is async — one worker handles many concurrent requests.

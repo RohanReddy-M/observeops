@@ -5,7 +5,7 @@
 #
 # The security model here:
 # Internet → ALB (port 80/443) → EC2 (port 8001/8002 from ALB only)
-# Your IP → EC2 (port 22 for SSH)
+# EC2 access → via SSM Session Manager only (ADR-002). Port 22 is not opened.
 # EC2 → Internet (all outbound allowed, for package downloads etc.)
 
 # ─── ALB Security Group ───────────────────────────────────────────────────────
@@ -52,16 +52,9 @@ resource "aws_security_group" "app" {
   description = "Security group for application EC2 instances"
   vpc_id      = var.vpc_id
 
-  # SSH - ONLY from your IP address
-  # Replace with your actual IP: curl ifconfig.me
-  # Never use 0.0.0.0/0 for SSH in production - that's how servers get compromised
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
-    description = "SSH from admin IP only"
-  }
+  # No port 22 — access via SSM Session Manager only (ADR-002).
+  # SSM requires no open inbound port: the agent inside EC2 reaches out to
+  # the SSM endpoint, so all sessions are initiated from inside the instance.
 
   # SecureShip port - ONLY from ALB security group
   # This is the key security pattern: the app server only accepts traffic from the ALB,
@@ -112,13 +105,7 @@ resource "aws_security_group" "observability" {
   description = "Security group for observability EC2 instance (Prometheus/Grafana)"
   vpc_id      = var.vpc_id
 
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
-    description = "SSH from admin"
-  }
+  # No port 22 — SSM Session Manager handles all admin access (ADR-002).
 
   # Grafana - accessible from your IP and from within VPC
   ingress {

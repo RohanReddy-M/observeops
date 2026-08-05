@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: secureship
+  namespace: observeops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: secureship

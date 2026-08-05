@@ -26,6 +26,13 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: secureship
       containers:
         - name: secureship
           image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/secureship:41cb173
@@ -63,6 +70,11 @@ spec:
               value: "8001"
             - name: DYNAMODB_TABLE
               value: "observeops-ships"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: observeops-config
+                  key: OBS_SERVER_OTLP_ENDPOINT
           volumeMounts:
             - name: tmp
               mountPath: /tmp

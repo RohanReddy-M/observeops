@@ -14,17 +14,37 @@ logger.setLevel(logging.INFO)
 
 RAGSERVICE_URL = os.environ.get("RAGSERVICE_URL", "https://secureship.click/ai/query")
 NOTIFICATION_TOPIC_ARN = os.environ.get("NOTIFICATION_TOPIC_ARN", "")
-# Shared secret injected by Terraform, validated on every AlertManager webhook.
-# If unset (local testing), auth is skipped.
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+# SSM parameter NAME (not the secret value) — secret is fetched at cold-start
+# so it never appears in CloudTrail env-var logs or the Lambda console.
+_WEBHOOK_SECRET_PARAM = os.environ.get("WEBHOOK_SECRET_PARAM", "")
+_webhook_secret_cache: str | None = None
+
+_ssm = None
+
+
+def _get_ssm():
+    global _ssm
+    if _ssm is None:
+        _ssm = boto3.client("ssm", region_name=os.environ.get("AWS_REGION", "ap-south-1"))
+    return _ssm
+
+
+def _get_webhook_secret() -> str:
+    global _webhook_secret_cache
+    if _webhook_secret_cache is None:
+        if not _WEBHOOK_SECRET_PARAM:
+            return ""
+        param = _get_ssm().get_parameter(Name=_WEBHOOK_SECRET_PARAM, WithDecryption=True)
+        _webhook_secret_cache = param["Parameter"]["Value"]
+    return _webhook_secret_cache
 
 
 def _validate_secret(headers: dict) -> bool:
-    if not WEBHOOK_SECRET:
+    secret = _get_webhook_secret()
+    if not secret:
         return True  # Auth not configured — allow (local/test)
     provided = headers.get("X-Webhook-Secret", "")
-    # Constant-time comparison prevents timing attacks
-    return hmac.compare_digest(provided, WEBHOOK_SECRET)
+    return hmac.compare_digest(provided, secret)
 
 
 def query_ragservice(question: str) -> str:

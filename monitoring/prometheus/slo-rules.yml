@@ -50,16 +50,24 @@ groups:
             by (le)
           )
 
-      # ── SecureShip: burn rate (1-hour window) ────────────────────────────────
-      # Burn rate = current error rate / allowed error rate.
+      # ── SecureShip: burn rate (two windows, Google SRE Workbook §6) ────────────
+      # Two windows reduce alert noise:
+      #   1h  → fast detection, catches sudden outages quickly
+      #   6h  → slow detection, catches gradual burn (many small errors over hours)
+      # Both must exceed the threshold to page — fast window alone causes false positives.
       # Burn rate = 1   → consuming budget at exactly the allowed pace.
-      # Burn rate = 14.4 → will exhaust the entire monthly budget in ~50 hours
-      #                    (the Google SRE page-immediately threshold).
-      # Formula: (1 - availability_1h) / (1 - slo_target)
+      # Burn rate = 14.4 → 1h window threshold (page immediately, ~50h to exhaustion).
+      # Burn rate = 6   → 6h window threshold (ticket urgently, ~5 days to exhaustion).
       - record: slo:secureship_availability:burn_rate1h
         expr: |
           (1 - sum(rate(http_requests_total{job="secureship",status_code!~"5.."}[1h]))
                / sum(rate(http_requests_total{job="secureship"}[1h])))
+          / 0.005
+
+      - record: slo:secureship_availability:burn_rate6h
+        expr: |
+          (1 - sum(rate(http_requests_total{job="secureship",status_code!~"5.."}[6h]))
+               / sum(rate(http_requests_total{job="secureship"}[6h])))
           / 0.005
 
       # ── RAGService: query success rate ───────────────────────────────────────

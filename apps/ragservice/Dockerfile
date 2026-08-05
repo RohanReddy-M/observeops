@@ -9,8 +9,8 @@ COPY requirements.txt .
 # System-wide install (NO --user flag).
 # --user puts packages in /root/.local which appuser can't read.
 # System-wide puts them in /usr/local/lib — readable by all users.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the embedding model into /tmp/model_cache.
 # /tmp is world-writable, so we can chown it in the runtime stage.
@@ -43,7 +43,7 @@ ENV TRANSFORMERS_CACHE=/app/.model_cache
 
 EXPOSE 8003
 
-HEALTHCHECK --interval=30s --timeout=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003", "--workers", "1"]

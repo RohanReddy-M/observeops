@@ -24,8 +24,16 @@ name: ObserveOps CI/CD
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.gitignore'
 
 # Scope GITHUB_TOKEN to minimum required permissions.
 # Default is write-all which is a security risk — a compromised workflow could
@@ -55,7 +63,11 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'    # Cache pip packages between runs (faster builds)
+          cache: 'pip'
+          cache-dependency-path: |
+            apps/secureship/requirements.txt
+            apps/ragservice/requirements.txt
+            apps/statusservice/requirements.txt
 
       - name: Install SecureShip dependencies
         run: pip install -r apps/secureship/requirements.txt
@@ -85,12 +97,6 @@ jobs:
         run: python apps/ragservice/eval.py
         continue-on-error: true
 
-      # Verify Docker build works (catches Dockerfile errors early)
-      - name: Verify Docker builds
-        run: |
-          docker build -t secureship-test apps/secureship/
-          docker build -t statusservice-test apps/statusservice/
-          docker build -t llm-alert-autopilot-test apps/llm-alert-autopilot/
 
   # ─── Job 2: Security Scan ───────────────────────────────────────────────────
   # Runs on every push AFTER tests pass.
@@ -237,124 +243,81 @@ jobs:
             echo "  Run scripts/infra-up.sh to bring infra up and set secrets"
           fi
 
-  # ─── Job 4: Build and Push ──────────────────────────────────────────────────
-  build-push:
-    name: Build and Push Images
+  # ─── Job 4: Generate Image Tag ─────────────────────────────────────────────
+  # Compute the tag once here so all parallel build jobs use the same value.
+  generate-tag:
+    name: Generate Image Tag
     runs-on: ubuntu-latest
-    needs: [test, security-scan, check-aws]
-
-    # Only run on pushes when AWS secrets are configured
+    needs: [check-aws]
     if: github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
-    
-    # Outputs let other jobs use values computed in this job
     outputs:
-      image-tag: ${{ steps.meta.outputs.tag }}
-
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # OIDC Authentication - no static keys needed
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          # This action exchanges GitHub's OIDC token for temporary AWS credentials
-          # Credentials expire in 1 hour - much safer than long-lived keys
-
-      # ECR login so Docker can push to our private registry
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # Generate image tags
-      # We tag with: git SHA (unique per commit) + branch name + latest (main only)
-      # Using git SHA means you can always trace an image back to the exact code commit
-      - name: Generate image metadata
+      - name: Generate image tag
         id: meta
         run: |
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
           echo "tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "Image tag: ${SHORT_SHA}"
 
-      # Build and push SecureShip
-      - name: Build and push SecureShip
+  # ─── Job 5: Build and Push (parallel matrix) ────────────────────────────────
+  # All four services build simultaneously — each gets its own runner.
+  # Previously sequential (secureship → statusservice → ragservice → autopilot),
+  # this cuts build time roughly 4×.
+  build-push:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [generate-tag, check-aws]
+    if: github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
+    strategy:
+      matrix:
+        include:
+          - service: secureship
+            context: apps/secureship
+          - service: statusservice
+            context: apps/statusservice
+          - service: ragservice
+            context: apps/ragservice
+          - service: llm-alert-autopilot
+            context: apps/llm-alert-autopilot
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push ${{ matrix.service }}
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          TAG: ${{ steps.meta.outputs.tag }}
+          TAG: ${{ needs.generate-tag.outputs.tag }}
+          SERVICE: ${{ matrix.service }}
         run: |
-          docker pull "$REGISTRY/secureship:latest" 2>/dev/null && \
-            CACHE_FLAG="--cache-from $REGISTRY/secureship:latest" || CACHE_FLAG=""
+          docker pull "$REGISTRY/$SERVICE:latest" 2>/dev/null && \
+            CACHE_FLAG="--cache-from $REGISTRY/$SERVICE:latest" || CACHE_FLAG=""
           docker build \
-            --tag "$REGISTRY/secureship:$TAG" \
-            --tag "$REGISTRY/secureship:${{ github.ref_name }}" \
             $CACHE_FLAG \
-            apps/secureship/
-          
-          docker push "$REGISTRY/secureship:$TAG"
-          docker push "$REGISTRY/secureship:${{ github.ref_name }}"
-          
-          # Also tag as 'latest' if this is the main branch
+            --tag "$REGISTRY/$SERVICE:$TAG" \
+            --tag "$REGISTRY/$SERVICE:${{ github.ref_name }}" \
+            ${{ matrix.context }}/
+          docker push "$REGISTRY/$SERVICE:$TAG"
+          docker push "$REGISTRY/$SERVICE:${{ github.ref_name }}"
           if [ "${{ github.ref_name }}" == "main" ]; then
-            docker tag "$REGISTRY/secureship:$TAG" "$REGISTRY/secureship:latest"
-            docker push "$REGISTRY/secureship:latest"
-          fi
-
-      # Build and push StatusService
-      - name: Build and push StatusService
-        env:
-          REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          docker build \
-            --tag "$REGISTRY/statusservice:$TAG" \
-            --tag "$REGISTRY/statusservice:${{ github.ref_name }}" \
-            apps/statusservice/
-          docker push "$REGISTRY/statusservice:$TAG"
-          docker push "$REGISTRY/statusservice:${{ github.ref_name }}"
-
-      # RAGService image is larger (~2GB with PyTorch) — cache layers aggressively
-      - name: Build and push RAGService
-        env:
-          REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          docker pull "$REGISTRY/ragservice:latest" 2>/dev/null && \
-            CACHE_FLAG="--cache-from $REGISTRY/ragservice:latest" || CACHE_FLAG=""
-          docker build \
-            --tag "$REGISTRY/ragservice:$TAG" \
-            --tag "$REGISTRY/ragservice:${{ github.ref_name }}" \
-            $CACHE_FLAG \
-            apps/ragservice/
-          docker push "$REGISTRY/ragservice:$TAG"
-          docker push "$REGISTRY/ragservice:${{ github.ref_name }}"
-          if [ "${{ github.ref_name }}" == "main" ]; then
-            docker tag "$REGISTRY/ragservice:$TAG" "$REGISTRY/ragservice:latest"
-            docker push "$REGISTRY/ragservice:latest"
-          fi
-
-      # Build and push LLM Alert Autopilot
-      - name: Build and push LLM Alert Autopilot
-        env:
-          REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          docker build \
-            --tag "$REGISTRY/llm-alert-autopilot:$TAG" \
-            --tag "$REGISTRY/llm-alert-autopilot:${{ github.ref_name }}" \
-            apps/llm-alert-autopilot/
-          docker push "$REGISTRY/llm-alert-autopilot:$TAG"
-          docker push "$REGISTRY/llm-alert-autopilot:${{ github.ref_name }}"
-          if [ "${{ github.ref_name }}" == "main" ]; then
-            docker tag "$REGISTRY/llm-alert-autopilot:$TAG" "$REGISTRY/llm-alert-autopilot:latest"
-            docker push "$REGISTRY/llm-alert-autopilot:latest"
+            docker tag "$REGISTRY/$SERVICE:$TAG" "$REGISTRY/$SERVICE:latest"
+            docker push "$REGISTRY/$SERVICE:latest"
           fi
 
   update-k8s-manifests:
     name: Update K8s Image Tags
     runs-on: ubuntu-latest
-    needs: [build-push, check-aws]
+    needs: [generate-tag, build-push, check-aws]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
     permissions:
       contents: write
@@ -367,7 +330,7 @@ jobs:
       - name: Update image tags in K8s manifests
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          TAG: ${{ needs.build-push.outputs.image-tag }}
+          TAG: ${{ needs.generate-tag.outputs.tag }}
         run: |
           # Regex matches both the placeholder (first deploy) and any prior real tag
           # (subsequent deploys). Pattern: image: <anything>/secureship:<anything>
@@ -381,7 +344,7 @@ jobs:
 
       - name: Commit and push manifest updates
         env:
-          TAG: ${{ needs.build-push.outputs.image-tag }}
+          TAG: ${{ needs.generate-tag.outputs.tag }}
         run: |
           git config user.email "github-actions@github.com"
           git config user.name "GitHub Actions"
@@ -393,7 +356,7 @@ jobs:
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
-    needs: [build-push, check-aws, update-k8s-manifests]
+    needs: [generate-tag, build-push, check-aws, update-k8s-manifests]
 
     # Only deploy on main branch pushes when AWS is configured
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
@@ -420,7 +383,7 @@ jobs:
       - name: Deploy to EC2 via SSM
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          TAG: ${{ needs.build-push.outputs.image-tag }}
+          TAG: ${{ needs.generate-tag.outputs.tag }}
           INSTANCE_ID_FALLBACK: ${{ secrets.EC2_INSTANCE_ID }}
           OBS_IP_FALLBACK: ${{ secrets.OBS_SERVER_IP }}
         run: |

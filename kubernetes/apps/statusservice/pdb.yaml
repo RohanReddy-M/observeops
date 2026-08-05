@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: statusservice
+  namespace: observeops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: statusservice
