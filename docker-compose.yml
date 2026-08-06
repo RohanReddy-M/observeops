@@ -257,10 +257,7 @@ services:
       - LOKI_HOST=${LOKI_HOST:-loki}
     command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9080/ready"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      disable: true
     deploy:
       resources:
         limits:
@@ -395,10 +392,7 @@ services:
     depends_on:
       - tempo
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:13133"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      disable: true
     networks:
       - observeops
     restart: unless-stopped
