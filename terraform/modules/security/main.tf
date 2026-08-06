@@ -134,6 +134,15 @@ resource "aws_security_group" "observability" {
     description = "Loki from VPC only"
   }
 
+  # Tempo OTel receiver - app server otel-collector exports traces here
+  ingress {
+    from_port   = 4317
+    to_port     = 4318
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+    description = "Tempo OTel gRPC and HTTP from VPC only"
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
