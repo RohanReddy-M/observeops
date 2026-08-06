@@ -35,7 +35,7 @@ spec:
               app: secureship
       containers:
         - name: secureship
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/secureship:41cb173
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/secureship:cad3a7c
           ports:
             - containerPort: 8001
           securityContext:
