@@ -33,7 +33,7 @@ spec:
         role: ai
       containers:
         - name: ragservice
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/ragservice:f146eed
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/ragservice:4b44361
           ports:
             - containerPort: 8003
           securityContext:
