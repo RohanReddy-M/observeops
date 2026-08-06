@@ -395,3 +395,15 @@ curl -sf -X POST http://localhost:8080/deploy-event \
 mkdir -p /var/log/observeops
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) DEPLOY SUCCESS commit=${DEPLOY_COMMIT} deployer=${DEPLOY_USER}" \
     >> /var/log/observeops/deployments.log
+
+# ─── Grafana deployment annotation ───────────────────────────────────────────
+# Posted from EC2 (not GitHub Actions) so the private Grafana URL always works.
+GRAFANA_PASS="${GRAFANA_PASSWORD:-observeops123}"
+if [ -n "$OBS_IP" ]; then
+    curl -sf -X POST "http://${OBS_IP}:3000/api/annotations" \
+        -u "admin:${GRAFANA_PASS}" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"Deploy: ${DEPLOY_COMMIT} by ${DEPLOY_USER}\",\"tags\":[\"deployment\",\"production\"]}" \
+        > /dev/null 2>&1 || true
+    log_info "Grafana deployment annotation posted ✓"
+fi
