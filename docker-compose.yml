@@ -161,7 +161,7 @@ services:
       - '--web.external-url=https://secureship.click/prometheus/'
       - '--web.route-prefix=/prometheus/'
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/prometheus/-/healthy"]
       interval: 30s
       timeout: 5s
       retries: 3
