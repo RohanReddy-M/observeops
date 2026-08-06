@@ -102,12 +102,12 @@ resource "aws_lambda_function" "incident_analyzer" {
 
   environment {
     variables = {
-      RAGSERVICE_URL              = "https://${var.domain_name}/ai/query"
-      NOTIFICATION_TOPIC_ARN      = aws_sns_topic.notifications.arn
+      RAGSERVICE_URL         = "https://${var.domain_name}/ai/query"
+      NOTIFICATION_TOPIC_ARN = aws_sns_topic.notifications.arn
       # Pass the SSM parameter NAME, not the secret value.
       # Lambda reads the actual secret from SSM at cold-start so it never
       # appears in CloudTrail env-var logs or the Lambda console.
-      WEBHOOK_SECRET_PARAM        = aws_ssm_parameter.webhook_secret.name
+      WEBHOOK_SECRET_PARAM = aws_ssm_parameter.webhook_secret.name
     }
   }
 
