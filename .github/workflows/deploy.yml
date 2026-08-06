@@ -34,6 +34,7 @@ on:
       - 'docs/**'
       - '**.md'
       - '.gitignore'
+  workflow_dispatch:
 
 # Scope GITHUB_TOKEN to minimum required permissions.
 # Default is write-all which is a security risk — a compromised workflow could
