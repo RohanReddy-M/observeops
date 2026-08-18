@@ -20,10 +20,22 @@ spec:
       labels:
         app: statusservice
     spec:
+      serviceAccountName: observeops-sa
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+      # secureship has this (see its own deployment.yaml); statusservice didn't,
+      # so both of its replicas could land on the same node with nothing
+      # protecting against a single node failure taking the "2 replica" service
+      # down entirely.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: statusservice
       containers:
         - name: statusservice
           image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/statusservice:4b44361
@@ -53,6 +65,16 @@ spec:
               port: 8002
             initialDelaySeconds: 15
             periodSeconds: 20
+          env:
+            # secureship and ragservice both wire this from observeops-config;
+            # statusservice never did, so it silently produced no OTel traces
+            # even though the rest of the architecture assumes all three
+            # services are instrumented consistently.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: observeops-config
+                  key: OBS_SERVER_OTLP_ENDPOINT
           volumeMounts:
             - name: tmp
               mountPath: /tmp

@@ -1,0 +1,18 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ragservice
+  namespace: observeops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  # secureship/statusservice use minAvailable: 1, but ragservice's HPA baseline
+  # is minReplicas: 1 — a minAvailable: 1 PDB at that replica count would block
+  # every voluntary eviction (a node drain could never satisfy "at least 1 of 1
+  # stays up"). maxUnavailable: 1 instead permits evicting the single baseline
+  # replica when needed, while still capping disruption to one pod at a time
+  # once HPA has scaled this up to 2-3.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: ragservice

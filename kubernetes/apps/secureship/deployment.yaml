@@ -22,6 +22,11 @@ spec:
       labels:
         app: secureship
     spec:
+      # eks/cluster.yaml provisions this IRSA-bound service account, but nothing
+      # actually used it — every pod ran as the namespace's `default` account
+      # instead, leaving the IRSA setup dead and secureship with no IAM identity
+      # of its own for its DynamoDB calls in the K8s path.
+      serviceAccountName: observeops-sa
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

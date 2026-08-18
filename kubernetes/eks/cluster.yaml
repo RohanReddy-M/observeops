@@ -51,6 +51,23 @@ iam:
         namespace: observeops
       attachPolicyARNs:
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      # SecureShip's DynamoDB calls had no IAM identity granting them anything
+      # in the K8s path at all — this account only had ECR read. Scoped the
+      # same way as the EC2 role's equivalent statement in
+      # terraform/modules/compute/main.tf (arn:aws:dynamodb:*:*:table/observeops-*),
+      # not a blanket dynamodb:* on every table in the account.
+      attachPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+            Resource: "arn:aws:dynamodb:*:*:table/observeops-*"
 
 addons:
   # AWS Load Balancer Controller — provisions ALB from Ingress resources

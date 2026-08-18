@@ -20,6 +20,7 @@ spec:
       labels:
         app: ragservice
     spec:
+      serviceAccountName: observeops-sa
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -31,6 +32,16 @@ spec:
           effect: "NoSchedule"
       nodeSelector:
         role: ai
+      # HPA scales this 1→3; when it does, spread across the ai-nodes group's
+      # (up to 3) members instead of letting the scaled-up replicas stack on
+      # whichever single node happened to be running the baseline replica.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ragservice
       containers:
         - name: ragservice
           image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/ragservice:4b44361
