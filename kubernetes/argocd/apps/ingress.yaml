@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ingress
+  namespace: argocd
+  annotations:
+    # Matches the sync-wave already set on the Ingress resource itself
+    # (kubernetes/ingress/ingress.yaml) — last, only useful once every backing
+    # service is up and healthy. Previously this resource had that annotation
+    # but no Application ever referenced kubernetes/ingress/, so it was never
+    # part of the GitOps flow at all and had to be applied by hand.
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: observeops
+  source:
+    repoURL: https://github.com/RohanReddy-M/observeops
+    targetRevision: HEAD
+    path: kubernetes/ingress
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observeops
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -40,6 +40,19 @@ spec:
                 port:
                   number: 8002
 
+          # Grafana is configured for this exact subpath (GF_SERVER_ROOT_URL /
+          # GF_SERVER_SERVE_FROM_SUB_PATH in kubernetes/monitoring/grafana/
+          # deployment.yaml), but no rule routed here — requests to /grafana/
+          # were falling through to the catch-all / rule below and hitting
+          # secureship instead of Grafana.
+          - path: /grafana/
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+
           # All other traffic goes to the main API
           - path: /
             pathType: Prefix

@@ -8,6 +8,12 @@ spec:
   sourceRepos:
     - https://github.com/RohanReddy-M/observeops
   destinations:
+    # app-of-apps.yaml's root Application must itself deploy child Application
+    # CRs into the argocd namespace — without this entry ArgoCD rejects the
+    # root Application's own sync with "not permitted to deploy to namespace
+    # 'argocd'", blocking the entire GitOps bootstrap before anything else runs.
+    - namespace: argocd
+      server: https://kubernetes.default.svc
     - namespace: observeops
       server: https://kubernetes.default.svc
     - namespace: monitoring

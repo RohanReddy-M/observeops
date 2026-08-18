@@ -23,6 +23,17 @@ spec:
 ---
 # Allow pods to talk to each other within the namespace.
 # RAGService needs to reach secureship for internal queries.
+#
+# NOTE: this is intentionally broad (any pod, any port, both directions) and it
+# currently supersedes the more specific allow-prometheus-scrape-* policies in
+# allow-monitoring.yaml — those exist to express "only Prometheus may reach the
+# app pods' metrics port," but this rule already grants that access to every
+# pod regardless, so the namespace has no real internal segmentation today
+# despite looking like it does. Narrowing this to only what's actually needed
+# (which specific pod needs which specific port on which other pod) requires
+# verifying the real call graph against a live cluster rather than guessing at
+# it from the manifests alone — left as full-mesh rather than risk silently
+# breaking a legitimate call path this comment doesn't fully enumerate.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

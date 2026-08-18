@@ -1,5 +1,15 @@
 ---
-# Allow Prometheus (in the monitoring namespace) to scrape /metrics from all app pods.
+# Allow Prometheus to scrape /metrics from all app pods.
+#
+# These previously scoped `from:` with a namespaceSelector for a `monitoring`
+# namespace — but everything in this project (apps AND monitoring) deploys into
+# the single `observeops` namespace (see kubernetes/namespace.yaml and
+# kubernetes/monitoring/*/deployment.yaml). No `monitoring` namespace was ever
+# created, so that selector never matched anything and these three policies were
+# silent dead code — scraping only worked because allow-intra-namespace.yaml's
+# far broader "any pod to any pod" rule was already covering the gap underneath
+# them. Same-namespace traffic doesn't need a namespaceSelector at all — the
+# podSelector below already implicitly scopes to this policy's own namespace.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -13,10 +23,7 @@ spec:
     - Ingress
   ingress:
     - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: monitoring
-          podSelector:
+        - podSelector:
             matchLabels:
               app: prometheus
       ports:
@@ -37,10 +44,7 @@ spec:
     - Ingress
   ingress:
     - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: monitoring
-          podSelector:
+        - podSelector:
             matchLabels:
               app: prometheus
       ports:
@@ -61,10 +65,7 @@ spec:
     - Ingress
   ingress:
     - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: monitoring
-          podSelector:
+        - podSelector:
             matchLabels:
               app: prometheus
       ports:
