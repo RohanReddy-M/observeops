@@ -39,10 +39,24 @@ on:
 # Scope GITHUB_TOKEN to minimum required permissions.
 # Default is write-all which is a security risk — a compromised workflow could
 # push code, delete branches, or create releases.
+# This is the top-level ceiling every job inherits unless it sets its own
+# (narrower) `permissions:` block below — most jobs here don't need the full
+# grant (e.g. `test` never touches AWS or uploads SARIF), so each job now scopes
+# down to exactly what it actually does.
 permissions:
   contents: read        # checkout
   id-token: write       # OIDC: exchange token for AWS credentials
   security-events: write # Upload SARIF scan results to GitHub Security tab
+
+# Two rapid pushes to the same branch used to be able to run overlapping
+# deploy-production jobs with no ordering guarantee — whichever SSM command
+# finished last would win, regardless of which commit was actually newer.
+# cancel-in-progress is deliberately false: cancelling an in-flight SSM deploy
+# mid-command could leave the app server half-updated, which is worse than a
+# few extra minutes of queueing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   AWS_REGION: ap-south-1
@@ -55,7 +69,10 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -110,6 +127,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: github.event_name == 'push'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - name: Checkout code
@@ -119,8 +140,12 @@ jobs:
 
       # Trivy scans all files for known CVEs in Python packages, OS packages,
       # and config files. Results appear in GitHub Security tab as SARIF.
+      # Pinned to a specific release, not @master — the same class of supply-chain
+      # risk ADR-008 documents for container images (a floating ref is *more*
+      # volatile than a mutable :latest image tag, and this one runs in a job that
+      # holds security-events: write).
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -184,6 +209,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: github.event_name == 'push'
+    timeout-minutes: 10
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -225,6 +253,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, security-scan, terraform-lint]
     if: github.event_name == 'push'
+    timeout-minutes: 5
+    # No checkout, no AWS auth, no SARIF upload — this job only reads secrets
+    # context values, so it needs none of the top-level GITHUB_TOKEN grant at all.
+    permissions: {}
     outputs:
       configured: ${{ steps.check.outputs.configured }}
     steps:
@@ -251,6 +283,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check-aws]
     if: github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
+    timeout-minutes: 5
+    # Pure string manipulation on github.sha — no checkout, no AWS, no SARIF.
+    permissions: {}
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
@@ -270,6 +305,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [generate-tag, check-aws]
     if: github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         include:
@@ -320,6 +359,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [generate-tag, build-push, check-aws]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
@@ -361,7 +401,13 @@ jobs:
 
     # Only deploy on main branch pushes when AWS is configured
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
-    
+    # Deploy's own SSM poll loop already self-bounds at 8 minutes; this timeout
+    # is a backstop for the AWS CLI calls that precede it, not the loop itself.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+
     # Environment with required reviewer approval
     # In GitHub: Settings → Environments → Create "production" → Add reviewer
     # This means someone must approve before the deployment runs
@@ -412,7 +458,6 @@ jobs:
             echo "⚠ SSM read failed — using OBS_SERVER_IP secret as fallback"
             OBS_SERVER_IP="$OBS_IP_FALLBACK"
           fi
-          echo "Obs server IP: $OBS_SERVER_IP"
           echo "Deploying $TAG to $INSTANCE_ID"
 
           # Single SSM command — sets env vars inline and runs deploy.sh as ubuntu.
