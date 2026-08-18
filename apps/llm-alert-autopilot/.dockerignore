@@ -6,3 +6,6 @@ __pycache__
 *.md
 tests/
 .pytest_cache/
+.git/
+*.egg-info/
+dist/
