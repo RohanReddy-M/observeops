@@ -125,6 +125,15 @@ module "compute" {
   obs_instance_type   = var.obs_instance_type
   common_tags         = local.common_tags
 
+  # Scopes the EC2 role's ECR pull permissions to just this project's four
+  # repos instead of every repo in the account (previously Resource = "*").
+  ecr_repository_arns = [
+    aws_ecr_repository.secureship.arn,
+    aws_ecr_repository.statusservice.arn,
+    aws_ecr_repository.ragservice.arn,
+    aws_ecr_repository.llm_alert_autopilot.arn,
+  ]
+
   # Deployment order: DynamoDB and Lambda must be provisioned first so their
   # SSM parameters exist when EC2 user_data runs on first boot.
   # Without this, user_data reads empty SSM params and falls back to defaults.

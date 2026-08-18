@@ -42,3 +42,9 @@ variable "common_tags" {
   type    = map(string)
   default = {}
 }
+
+variable "ecr_repository_arns" {
+  description = "ARNs of the project's own ECR repositories — scopes the EC2 role's pull permissions to just these instead of every repo in the account."
+  type        = list(string)
+  default     = []
+}

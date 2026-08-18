@@ -50,63 +50,77 @@ resource "aws_iam_role_policy" "ec2" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        # Allow pulling images from ECR (our private Docker registry)
-        Effect = "Allow"
-        Action = [
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage",
-          "ecr:GetAuthorizationToken",
-          "ecr:BatchCheckLayerAvailability"
-        ]
-        Resource = "*"
-      },
-      {
-        # Allow writing logs to CloudWatch
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents",
-          "logs:DescribeLogStreams"
-        ]
-        Resource = "*"
-      },
-      {
-        # Allow SSM Session Manager (SSH alternative, more secure)
-        Effect = "Allow"
-        Action = [
-          "ssm:UpdateInstanceInformation",
-          "ssmmessages:CreateControlChannel",
-          "ssmmessages:CreateDataChannel",
-          "ssmmessages:OpenControlChannel",
-          "ssmmessages:OpenDataChannel"
-        ]
-        Resource = "*"
-      },
-      {
-        # Read application secrets from SSM Parameter Store.
-        # Scoped to only our project's parameters — least privilege.
-        # This is how GROQ_API_KEY gets to the EC2 instance without
-        # appearing in git, environment variables, or AMI images.
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = "arn:aws:ssm:*:*:parameter/observeops/*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan"
-        ]
-        Resource = "arn:aws:dynamodb:*:*:table/observeops-*"
-      }
-    ]
+    Statement = concat(
+      [
+        {
+          # ecr:GetAuthorizationToken doesn't support resource-level permissions —
+          # AWS requires Resource "*" for this specific action, it's not a choice.
+          Effect   = "Allow"
+          Action   = ["ecr:GetAuthorizationToken"]
+          Resource = "*"
+        },
+        {
+          # Unlike GetAuthorizationToken above, these three DO support resource
+          # scoping — previously left as "*", which meant this role could pull
+          # from any ECR repo in the account, not just this project's four.
+          Effect = "Allow"
+          Action = [
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:BatchGetImage",
+            "ecr:BatchCheckLayerAvailability"
+          ]
+          Resource = length(var.ecr_repository_arns) > 0 ? var.ecr_repository_arns : ["*"]
+        },
+        {
+          # Scoped to this project's own log group prefix — previously "*" meant
+          # this role could write to (and, via DescribeLogStreams, enumerate) any
+          # CloudWatch log group in the account, not just its own.
+          Effect = "Allow"
+          Action = [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents",
+            "logs:DescribeLogStreams"
+          ]
+          Resource = "arn:aws:logs:${var.aws_region}:*:log-group:/${var.project_name}/*:*"
+        },
+      ],
+      [
+        {
+          # Allow SSM Session Manager (SSH alternative, more secure)
+          Effect = "Allow"
+          Action = [
+            "ssm:UpdateInstanceInformation",
+            "ssmmessages:CreateControlChannel",
+            "ssmmessages:CreateDataChannel",
+            "ssmmessages:OpenControlChannel",
+            "ssmmessages:OpenDataChannel"
+          ]
+          Resource = "*"
+        },
+        {
+          # Read application secrets from SSM Parameter Store.
+          # Scoped to only our project's parameters — least privilege.
+          # This is how GROQ_API_KEY gets to the EC2 instance without
+          # appearing in git, environment variables, or AMI images.
+          Effect   = "Allow"
+          Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+          Resource = "arn:aws:ssm:*:*:parameter/observeops/*"
+        },
+        {
+          Effect = "Allow"
+          Action = [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+            "dynamodb:DeleteItem",
+            "dynamodb:Query",
+            "dynamodb:Scan"
+          ]
+          Resource = "arn:aws:dynamodb:*:*:table/observeops-*"
+        }
+      ]
+    )
   })
 }
 

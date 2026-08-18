@@ -14,6 +14,11 @@ variable "environment" {
   description = "Environment name (production, staging)"
   type        = string
   default     = "production"
+
+  validation {
+    condition     = contains(["production", "staging"], var.environment)
+    error_message = "environment must be either \"production\" or \"staging\" — a typo here would silently apply with the wrong tags and no error."
+  }
 }
 
 variable "vpc_cidr" {
@@ -40,6 +45,16 @@ variable "admin_cidr" {
   description = "YOUR IP address in CIDR format for SSH. Run: curl ifconfig.me"
   type        = string
   # No default - you MUST set this. Prevents accidental open SSH access.
+
+  # This variable gates ingress to Grafana (3000), Prometheus (9090), Loki (3100)
+  # and Tempo's OTel ports in the observability security group (see
+  # modules/security/main.tf) — nothing in the security-group rules themselves
+  # stops this from being set to 0.0.0.0/0, which would open all of those to the
+  # entire internet with no error from Terraform. Enforce the /32 here instead.
+  validation {
+    condition     = can(cidrhost(var.admin_cidr, 0)) && length(split("/", var.admin_cidr)) == 2 && split("/", var.admin_cidr)[1] == "32"
+    error_message = "admin_cidr must be a single IP address in /32 CIDR notation (e.g. 203.0.113.10/32), not a broader range."
+  }
 }
 
 variable "public_key_path" {
