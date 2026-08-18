@@ -10,7 +10,12 @@
 #   ./deploy.sh --local            # Build and deploy locally (no ECR)
 #   ./deploy.sh --rollback         # Roll back to previous version
 
-set -e
+# -o pipefail: without it, `aws ecr get-login-password | docker login ...` (below)
+# only reports docker login's exit code — a failed `aws` call with a working
+# `docker login` on empty stdin could slip through undetected. Not adding -u
+# (nounset) here: this script leans on bare $1 checks throughout, and retrofitting
+# that safely means auditing every reference, not a one-line change.
+set -eo pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 # These are set as environment variables in production
@@ -29,6 +34,12 @@ NC='\033[0m' # No Color
 log_info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# sed's replacement text treats a bare & as "insert the whole match" and \ as an
+# escape — an SSM-stored URL that happens to contain either (plausible for any
+# URL with query parameters) would silently substitute the wrong text instead of
+# erroring, and `sed -i` would still report success. Escape both before use.
+sed_escape_repl() { printf '%s' "$1" | sed -e 's/[\&]/\\&/g'; }
 
 # ─── Pre-Deploy Checks ────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════"
@@ -92,9 +103,17 @@ if [ "$1" == "--rollback" ]; then
     PREVIOUS_IMAGE=$(cat "$ROLLBACK_FILE")
     log_warning "ROLLING BACK to: $PREVIOUS_IMAGE"
 
-    # Update docker-compose to use the previous image
-    export SECURESHIP_IMAGE="$PREVIOUS_IMAGE"
-    docker compose -f "$APP_DIR/docker-compose.yml" up -d secureship statusservice
+    # docker-compose.yml resolves images from ECR_REGISTRY + IMAGE_TAG
+    # (image: ${ECR_REGISTRY:-observeops}/secureship:${IMAGE_TAG:-local}) — exporting
+    # the full image string alone is a no-op, compose never reads it. Split
+    # PREVIOUS_IMAGE ("<registry>/secureship:<tag>") back into the two vars compose
+    # actually uses, and re-invoking this same script with them set (e.g. via
+    # `"$0" --rollback` from a failed health check below, or from CI on --rollback)
+    # deploys the exact previous image, not whatever IMAGE_TAG happened to be
+    # inherited from the failed run's environment.
+    export IMAGE_TAG="${PREVIOUS_IMAGE##*:}"
+    export ECR_REGISTRY="${PREVIOUS_IMAGE%/secureship:*}"
+    docker compose -f "$APP_DIR/docker-compose.yml" up -d secureship statusservice ragservice
 
     log_info "Rollback complete."
     sleep 10
@@ -172,22 +191,59 @@ log_info "Deploying RAGService..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps ragservice
 
 log_info "Waiting for RAGService to be healthy..."
-for i in $(seq 1 12); do
+RAG_RETRIES=0
+RAG_MAX_RETRIES=12
+RAG_HEALTHY=false
+while [ $RAG_RETRIES -lt $RAG_MAX_RETRIES ]; do
     if curl -sf http://localhost:8003/health > /dev/null 2>&1; then
         log_info "RAGService is healthy ✓"
+        RAG_HEALTHY=true
         break
     fi
-    log_warning "Health check failed ($i/12), waiting..."
+    RAG_RETRIES=$((RAG_RETRIES + 1))
+    log_warning "Health check failed ($RAG_RETRIES/$RAG_MAX_RETRIES), waiting..."
     sleep 5
 done
 
-log_info "Ingesting runbooks into RAGService vector store..."
-INGESTED=0
-for f in "$APP_DIR/docs/runbooks"/*.md; do
-    [ -f "$f" ] || continue
-    content=$(cat "$f")
-    fname=$(basename "$f")
-    result=$(echo "$content" | python3 -c "
+# Unlike SecureShip above, a stuck RAGService used to fall through silently here
+# and the deploy would carry on as if nothing were wrong — the only thing that
+# eventually caught it was the much coarser smoke-test block at the end.
+if [ "$RAG_HEALTHY" = false ]; then
+    log_error "RAGService failed to become healthy after 60 seconds"
+    log_warning "Initiating automatic rollback..."
+    if [ -f "$ROLLBACK_FILE" ]; then
+        "$0" --rollback
+    else
+        log_error "No rollback version available. Manual intervention required."
+    fi
+    exit 1
+fi
+
+# FAISS is in-memory (see ADR-005) — a freshly-recreated ragservice container
+# always starts with zero documents and needs a re-ingest. But `docker compose up`
+# is a no-op if the container's config hasn't changed (e.g. a re-run with the same
+# IMAGE_TAG), in which case the existing container — and its already-populated
+# FAISS store — is untouched. Re-ingesting on top of that would duplicate every
+# runbook chunk and degrade retrieval quality. Check the doc count first and only
+# ingest into a genuinely empty store.
+EXISTING_DOCS=$(curl -sf http://localhost:8003/health 2>/dev/null | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('vector_store_docs', 0))
+except Exception:
+    print(0)
+" 2>/dev/null || echo "0")
+
+if [ "${EXISTING_DOCS:-0}" -gt 0 ] 2>/dev/null; then
+    log_info "RAGService vector store already has ${EXISTING_DOCS} docs (container wasn't recreated) — skipping re-ingest to avoid duplicates"
+else
+    log_info "Ingesting runbooks into RAGService vector store..."
+    INGESTED=0
+    for f in "$APP_DIR/docs/runbooks"/*.md; do
+        [ -f "$f" ] || continue
+        content=$(cat "$f")
+        fname=$(basename "$f")
+        result=$(echo "$content" | python3 -c "
 import sys, json, urllib.request
 content = sys.stdin.read()
 data = json.dumps({'texts': [content], 'metadatas': [{'source': '${fname}', 'type': 'runbook'}]}).encode()
@@ -195,9 +251,10 @@ req = urllib.request.Request('http://localhost:8003/ingest', data=data, headers=
 resp = urllib.request.urlopen(req, timeout=10)
 print(json.loads(resp.read()).get('chunks_created', 0))
 " 2>/dev/null || echo "0")
-    INGESTED=$((INGESTED + result))
-done
-log_info "Ingested ${INGESTED} chunks from runbooks into RAGService ✓"
+        INGESTED=$((INGESTED + result))
+    done
+    log_info "Ingested ${INGESTED} chunks from runbooks into RAGService ✓"
+fi
 
 log_info "Injecting obs server IP into nginx config..."
 OBS_IP="${OBS_SERVER_IP:-$(aws ssm get-parameter \
@@ -212,7 +269,7 @@ if [ -n "$OBS_IP" ]; then
     # Write via cat > (not sed -i) to preserve the inode Docker has bind-mounted.
     # sed -i replaces the inode; Docker's bind mount then points to the old orphaned
     # inode and nginx never sees the new content even after reload.
-    sed "s|__OBS_SERVER_IP__|${OBS_IP}|g" "$APP_DIR/nginx/nginx.conf" > /tmp/nginx_injected.conf
+    sed "s|__OBS_SERVER_IP__|$(sed_escape_repl "$OBS_IP")|g" "$APP_DIR/nginx/nginx.conf" > /tmp/nginx_injected.conf
     cat /tmp/nginx_injected.conf > "$APP_DIR/nginx/nginx.conf"
     log_info "Obs server IP injected: ${OBS_IP} ✓"
 else
@@ -232,7 +289,7 @@ LAMBDA_URL=$(aws ssm get-parameter \
 git -C "$APP_DIR" checkout HEAD -- monitoring/alertmanager/alertmanager.yml
 
 if [ -n "$LAMBDA_URL" ]; then
-    sed -i "s|__LAMBDA_FUNCTION_URL__|${LAMBDA_URL}|g" \
+    sed -i "s|__LAMBDA_FUNCTION_URL__|$(sed_escape_repl "$LAMBDA_URL")|g" \
         "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
     log_info "Lambda URL injected ✓"
 else
@@ -255,7 +312,7 @@ SLACK_WARNINGS=$(aws ssm get-parameter \
     --output text 2>/dev/null || echo "")
 
 if [ -n "$SLACK_CRITICAL" ]; then
-    sed -i "s|__SLACK_WEBHOOK_CRITICAL__|${SLACK_CRITICAL}|g" \
+    sed -i "s|__SLACK_WEBHOOK_CRITICAL__|$(sed_escape_repl "$SLACK_CRITICAL")|g" \
         "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
     log_info "Slack critical webhook injected ✓"
 else
@@ -263,7 +320,7 @@ else
 fi
 
 if [ -n "$SLACK_WARNINGS" ]; then
-    sed -i "s|__SLACK_WEBHOOK_WARNINGS__|${SLACK_WARNINGS}|g" \
+    sed -i "s|__SLACK_WEBHOOK_WARNINGS__|$(sed_escape_repl "$SLACK_WARNINGS")|g" \
         "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
     log_info "Slack warnings webhook injected ✓"
 else
@@ -274,7 +331,7 @@ log_info "Injecting obs server IP into OTel Collector config..."
 git -C "$APP_DIR" checkout HEAD -- monitoring/otel/otel-collector.yaml
 
 if [ -n "$OBS_IP" ]; then
-    sed "s|__OBS_SERVER_IP__|${OBS_IP}|g" "$APP_DIR/monitoring/otel/otel-collector.yaml" > /tmp/otel_injected.yaml
+    sed "s|__OBS_SERVER_IP__|$(sed_escape_repl "$OBS_IP")|g" "$APP_DIR/monitoring/otel/otel-collector.yaml" > /tmp/otel_injected.yaml
     cat /tmp/otel_injected.yaml > "$APP_DIR/monitoring/otel/otel-collector.yaml"
     log_info "OTel Collector Tempo endpoint set to ${OBS_IP}:4317 ✓"
 else
@@ -382,28 +439,41 @@ echo ""
 # Without this, the on-call has to manually correlate alert time with git log.
 DEPLOY_COMMIT="${IMAGE_TAG:-$(git -C "${APP_DIR:-/opt/observeops}" rev-parse --short HEAD 2>/dev/null || echo "unknown")}"
 DEPLOY_USER="${DEPLOY_USER:-$(whoami)}"
-curl -sf -X POST http://localhost:8080/deploy-event \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"commit\":   \"${DEPLOY_COMMIT}\",
-        \"deployer\": \"${DEPLOY_USER}\",
-        \"status\":   \"success\",
-        \"services\": [\"secureship\", \"statusservice\", \"ragservice\"]
-    }" > /dev/null 2>&1 || true  # non-fatal — monitoring shouldn't block deploy
 
-# Log deployment event locally as backup
+# Neither the deploy-event endpoint nor the Grafana annotation API dedupe on their
+# own — a CI retry re-running this script for the same commit would otherwise
+# double-count DORA's deployment-frequency metric and leave a duplicate marker
+# line on every dashboard. Guard on a local marker instead.
+LAST_DEPLOY_FILE="/opt/observeops/.last-registered-deploy"
+if [ -f "$LAST_DEPLOY_FILE" ] && [ "$(cat "$LAST_DEPLOY_FILE")" = "$DEPLOY_COMMIT" ]; then
+    log_info "Deploy event for commit ${DEPLOY_COMMIT} already registered — skipping duplicate DORA event and annotation"
+else
+    curl -sf -X POST http://localhost:8080/deploy-event \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"commit\":   \"${DEPLOY_COMMIT}\",
+            \"deployer\": \"${DEPLOY_USER}\",
+            \"status\":   \"success\",
+            \"services\": [\"secureship\", \"statusservice\", \"ragservice\"]
+        }" > /dev/null 2>&1 || true  # non-fatal — monitoring shouldn't block deploy
+
+    # ─── Grafana deployment annotation ───────────────────────────────────────
+    # Posted from EC2 (not GitHub Actions) so the private Grafana URL always works.
+    GRAFANA_PASS="${GRAFANA_PASSWORD:-observeops123}"
+    if [ -n "$OBS_IP" ]; then
+        curl -sf -X POST "http://${OBS_IP}:3000/api/annotations" \
+            -u "admin:${GRAFANA_PASS}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"Deploy: ${DEPLOY_COMMIT} by ${DEPLOY_USER}\",\"tags\":[\"deployment\",\"production\"]}" \
+            > /dev/null 2>&1 || true
+        log_info "Grafana deployment annotation posted ✓"
+    fi
+
+    echo "$DEPLOY_COMMIT" > "$LAST_DEPLOY_FILE"
+fi
+
+# Log deployment event locally as backup — always, even on a skipped duplicate,
+# since this is a local audit trail, not a metric that gets corrupted by re-runs.
 mkdir -p /var/log/observeops
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) DEPLOY SUCCESS commit=${DEPLOY_COMMIT} deployer=${DEPLOY_USER}" \
     >> /var/log/observeops/deployments.log
-
-# ─── Grafana deployment annotation ───────────────────────────────────────────
-# Posted from EC2 (not GitHub Actions) so the private Grafana URL always works.
-GRAFANA_PASS="${GRAFANA_PASSWORD:-observeops123}"
-if [ -n "$OBS_IP" ]; then
-    curl -sf -X POST "http://${OBS_IP}:3000/api/annotations" \
-        -u "admin:${GRAFANA_PASS}" \
-        -H "Content-Type: application/json" \
-        -d "{\"text\":\"Deploy: ${DEPLOY_COMMIT} by ${DEPLOY_USER}\",\"tags\":[\"deployment\",\"production\"]}" \
-        > /dev/null 2>&1 || true
-    log_info "Grafana deployment annotation posted ✓"
-fi
