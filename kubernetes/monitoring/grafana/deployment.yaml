@@ -26,11 +26,26 @@ spec:
       labels:
         app: grafana
     spec:
+      # No securityContext existed here at all — the app deployments (secureship
+      # etc.) are fully hardened, monitoring wasn't, an inconsistency worth
+      # closing. Not forcing runAsUser like the app pods do: this image already
+      # defaults to a non-root UID internally (472), and forcing a different one
+      # risks a permission mismatch against files the image itself owns.
+      securityContext:
+        runAsNonRoot: true
       containers:
         - name: grafana
-          image: grafana/grafana:latest
+          # Pinned to the same version already vetted in docker-compose.yml —
+          # was :latest, which breaks reproducible deploys and risked an
+          # unplanned version jump on any ArgoCD selfHeal/redeploy.
+          image: grafana/grafana:11.4.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "100m"
@@ -57,6 +72,15 @@ spec:
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 15
+          # Previously missing entirely — a hung Grafana process would just sit
+          # marked not-ready forever with nothing ever restarting it.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -75,12 +99,10 @@ spec:
     - port: 3000
       targetPort: 3000
 ---
-# Store sensitive config in Secrets, never in plaintext ConfigMaps or env vars
-apiVersion: v1
-kind: Secret
-metadata:
-  name: grafana-secret
-  namespace: observeops
-type: Opaque
-stringData:
-  admin-password: "change-me-in-production"
+# grafana-secret is intentionally NOT defined here. It previously shipped as a
+# real Secret object with the literal value "change-me-in-production" committed
+# to git — that's a real password in source control, and (per its own name) one
+# an operator could easily forget to actually change. It's created out-of-band
+# by kubernetes/bootstrap.sh instead, the exact same pattern already used for
+# observeops-secrets (GROQ_API_KEY) below it in that script — never committed,
+# generated fresh if not supplied.

@@ -28,15 +28,27 @@ spec:
       labels:
         app: prometheus
     spec:
+      # This image already defaults to a non-root UID (65534, "nobody")
+      # internally, so runAsNonRoot enforces that without forcing a specific
+      # UID that could conflict with files the image itself owns.
+      securityContext:
+        runAsNonRoot: true
       containers:
         - name: prometheus
-          image: prom/prometheus:latest
+          # Pinned to the version already vetted in docker-compose.yml — was
+          # :latest, which breaks reproducible deploys.
+          image: prom/prometheus:v2.55.1
+          imagePullPolicy: IfNotPresent
           args:
             - "--config.file=/etc/prometheus/prometheus.yml"
             - "--storage.tsdb.path=/prometheus"
             - "--storage.tsdb.retention.time=15d"
           ports:
             - containerPort: 9090
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "200m"
@@ -55,6 +67,17 @@ spec:
               port: 9090
             initialDelaySeconds: 10
             periodSeconds: 15
+          # Prometheus ships a separate /-/healthy endpoint specifically for
+          # liveness (distinct from /-/ready) — previously no livenessProbe
+          # existed at all, so a hung WAL compaction or TSDB corruption would
+          # leave Prometheus unready forever with nothing ever restarting it.
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
       volumes:
         - name: config
           configMap:

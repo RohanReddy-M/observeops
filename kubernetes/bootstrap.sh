@@ -32,6 +32,24 @@ kubectl create secret generic observeops-secrets \
   --namespace "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
 
+# Previously a real password ("change-me-in-production") was committed directly
+# in kubernetes/monitoring/grafana/deployment.yaml as a Secret object — creating
+# it here instead means nothing sensitive is ever in git, same as GROQ_API_KEY
+# above. If GRAFANA_ADMIN_PASSWORD isn't supplied, generate a strong random one
+# rather than fall back to any hardcoded default.
+echo "==> Creating grafana-secret (admin password)..."
+GRAFANA_PASS="${GRAFANA_ADMIN_PASSWORD:-}"
+if [ -z "$GRAFANA_PASS" ]; then
+  GRAFANA_PASS=$(openssl rand -base64 24)
+  echo "  GRAFANA_ADMIN_PASSWORD not set — generated a random password:"
+  echo "  ${GRAFANA_PASS}"
+  echo "  Save this now — it is not stored anywhere else."
+fi
+kubectl create secret generic grafana-secret \
+  --from-literal=admin-password="$GRAFANA_PASS" \
+  --namespace "$NAMESPACE" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
 echo "==> Creating observeops-config (OTel endpoint)..."
 OBS_IP=$(aws ssm get-parameter \
   --name "/observeops/production/obs_server_ip" \

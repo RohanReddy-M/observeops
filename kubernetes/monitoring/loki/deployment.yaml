@@ -26,11 +26,23 @@ spec:
       labels:
         app: loki
     spec:
+      # This image already defaults to a non-root UID (10001) internally, so
+      # runAsNonRoot enforces that without forcing a specific UID that could
+      # conflict with files the image itself owns.
+      securityContext:
+        runAsNonRoot: true
       containers:
         - name: loki
-          image: grafana/loki:latest
+          # Pinned to the version already vetted in docker-compose.yml — was
+          # :latest, which breaks reproducible deploys.
+          image: grafana/loki:3.3.2
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3100
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "100m"
@@ -47,6 +59,14 @@ spec:
               port: 3100
             initialDelaySeconds: 10
             periodSeconds: 15
+          # Previously missing — nothing restarted a hung Loki process before.
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
       volumes:
         - name: data
           persistentVolumeClaim:
