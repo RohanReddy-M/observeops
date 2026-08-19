@@ -132,7 +132,7 @@
       "gridPos": { "x": 18, "y": 4, "w": 6, "h": 5 },
       "targets": [{
         "datasource": { "type": "prometheus" },
-        "expr": "last_deployment_timestamp_seconds",
+        "expr": "last_deployment_timestamp_seconds * 1000",
         "legendFormat": "Last Deploy Timestamp"
       }],
       "options": {
