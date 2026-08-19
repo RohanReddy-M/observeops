@@ -44,7 +44,7 @@ spec:
               app: ragservice
       containers:
         - name: ragservice
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/ragservice:b6258e6
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/ragservice:b41c039
           ports:
             - containerPort: 8003
           securityContext:

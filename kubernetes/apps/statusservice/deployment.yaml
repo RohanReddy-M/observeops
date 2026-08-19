@@ -38,7 +38,7 @@ spec:
               app: statusservice
       containers:
         - name: statusservice
-          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/statusservice:b6258e6
+          image: 198239799708.dkr.ecr.ap-south-1.amazonaws.com/observeops/statusservice:b41c039
           ports:
             - containerPort: 8002
           securityContext:
