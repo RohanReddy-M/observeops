@@ -78,7 +78,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -162,7 +162,7 @@ jobs:
       # Bandit is Python-specific SAST (Static Application Security Testing).
       # It catches: shell injection, hardcoded passwords, use of insecure functions.
       - name: Set up Python for Bandit
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
