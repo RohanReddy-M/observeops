@@ -1,4 +1,4 @@
-fastapi>=0.115.0
+fastapi>=0.141.1
 tenacity>=8.2.0
 pybreaker>=1.2.0
 uvicorn[standard]>=0.30.0
