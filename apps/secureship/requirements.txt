@@ -9,7 +9,7 @@ uvicorn==0.24.0
 prometheus-client==0.19.0
 
 # HTTP client - useful for making requests to other services
-httpx==0.25.2
+httpx==0.28.1
 
 # For parsing request bodies
 python-multipart==0.0.6
