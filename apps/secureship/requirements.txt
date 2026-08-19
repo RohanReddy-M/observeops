@@ -6,7 +6,7 @@ fastapi==0.109.1
 uvicorn==0.24.0
 
 # Prometheus metrics library - exposes /metrics endpoint
-prometheus-client==0.19.0
+prometheus-client==0.26.0
 
 # HTTP client - useful for making requests to other services
 httpx==0.25.2
