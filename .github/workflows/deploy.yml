@@ -26,12 +26,14 @@ on:
     branches: [main, develop]
     paths-ignore:
       - 'docs/**'
+      - 'analytics/**'
       - '**.md'
       - '.gitignore'
   pull_request:
     branches: [main]
     paths-ignore:
       - 'docs/**'
+      - 'analytics/**'
       - '**.md'
       - '.gitignore'
   workflow_dispatch:
