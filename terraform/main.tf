@@ -43,7 +43,7 @@ terraform {
   #   terraform init -backend-config=key=production/terraform.tfstate
   #   terraform init -backend-config=key=staging/terraform.tfstate
   backend "s3" {
-    bucket         = "observeops-terraform-state-198239799708"
+    bucket         = "observeops-terraform-state-317135986490"
     region         = "ap-south-1"
     encrypt        = true
     dynamodb_table = "observeops-terraform-locks"
