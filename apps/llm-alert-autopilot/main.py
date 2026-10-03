@@ -86,7 +86,16 @@ diagnosis_latency = Histogram("autopilot_diagnosis_latency_seconds", "End-to-end
 
 # DORA metrics
 # These give you the language to talk about engineering performance, not just system health.
-deployments_total           = Counter("deployments_total", "Total production deployments", ["commit", "status"])
+# `commit` must NOT be a label here. A counter labelled with the commit SHA creates
+# one time series per deployment, permanently — unbounded cardinality that grows
+# with every deploy and is never reclaimed. It also broke the DORA panel: with a
+# commit label, increase(deployments_total[7d]) returns N series of 1 each instead
+# of a deployment count. High-cardinality identifiers belong in logs and in the
+# /deploy-history response, not in label values.
+deployments_total           = Counter("deployments_total", "Total production deployments", ["status"])
+# The current commit is still exposed, but as a single series: clear() drops the
+# previous child before the new one is set, so this stays at exactly one series.
+deployment_info             = Gauge("deployment_info", "Most recent deployment", ["commit", "deployer", "status"])
 last_deployment_timestamp   = Gauge("last_deployment_timestamp_seconds", "Unix timestamp of the most recent deployment")
 alert_mttr_seconds          = Histogram(
     "alert_mttr_seconds",
@@ -377,7 +386,11 @@ async def deploy_event(event: DeployEvent):
     _recent_deploys.insert(0, record)
     del _recent_deploys[10:]  # keep last 10
 
-    deployments_total.labels(commit=event.commit[:12], status=event.status).inc()
+    deployments_total.labels(status=event.status).inc()
+    deployment_info.clear()  # drop the previous commit's series before setting this one
+    deployment_info.labels(
+        commit=event.commit[:12], deployer=event.deployer, status=event.status
+    ).set(1)
     last_deployment_timestamp.set(time.time())
 
     logger.info("Deploy recorded: commit=%s deployer=%s status=%s",

@@ -127,12 +127,31 @@ SEED_DOCUMENTS = [
 pipeline = RAGPipeline()
 
 
+def _sync_document_gauge(fallback_delta: int = 0) -> None:
+    """Point vector_store_documents at the index's own count.
+
+    The FAISS index is the single source of truth for how many chunks exist, and
+    it is what /health reports. Deriving the gauge from it keeps the metric, the
+    health endpoint and the RAGIndexEmpty alert telling the same story. If the
+    index cannot be read, fall back to incrementing so the gauge still moves
+    rather than going stale.
+    """
+    try:
+        if pipeline.vector_store is not None:
+            vector_store_documents.set(pipeline.vector_store.index.ntotal)
+            return
+    except Exception:
+        pass
+    if fallback_delta:
+        vector_store_documents.inc(fallback_delta)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     texts = [d["text"] for d in SEED_DOCUMENTS]
     metadatas = [d["metadata"] for d in SEED_DOCUMENTS]
     count = pipeline.ingest(texts, metadatas)
-    vector_store_documents.set(count)
+    _sync_document_gauge(fallback_delta=count)
     logger.info(f"RAGService ready — {count} document chunks pre-loaded")
     yield
 
@@ -214,7 +233,12 @@ def ingest(request: IngestRequest):
 
     try:
         count = pipeline.ingest(request.texts, request.metadatas)
-        vector_store_documents.inc(count)
+        # Set from the index itself rather than inc()-ing a shadow total. The
+        # RAGIndexEmpty alert is driven by this gauge, so it has to match reality:
+        # an accumulated count drifts the moment an ingest partially fails or the
+        # store is rebuilt, and a drifted gauge means the zombie-index alert the
+        # 2026-05-31 chaos experiment exists to catch would silently stop working.
+        _sync_document_gauge(fallback_delta=count)
         logger.info(f"Ingested {count} new chunks — {request.texts[0][:60]}...")
         return {"chunks_created": count, "message": "Ingestion successful"}
     except Exception as exc:
