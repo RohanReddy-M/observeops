@@ -23,16 +23,27 @@ from opentelemetry.sdk.resources import Resource
 
 _resource = Resource.create({"service.name": "secureship", "service.version": "1.0.0"})
 _provider = TracerProvider(resource=_resource)
-_otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
-_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=_otlp_endpoint, insecure=True)))
+# OTEL_SDK_DISABLED is the spec-defined kill switch. Honour it so tests and local
+# runs don't sit in an exporter retry loop against a collector that isn't there.
+if os.getenv("OTEL_SDK_DISABLED", "").lower() not in ("true", "1", "yes"):
+    _otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
+    _provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=_otlp_endpoint, insecure=True)))
 trace.set_tracer_provider(_provider)
 
 try:
     import boto3
+    from boto3.dynamodb.conditions import Attr
     from botocore.exceptions import ClientError
     DYNAMODB_AVAILABLE = True
 except ImportError:
     DYNAMODB_AVAILABLE = False
+
+
+# Attributes present on every LogRecord. Anything outside this set was passed by
+# us via `extra=` and is the structured payload we actually want to emit.
+_RESERVED_LOG_ATTRS = set(
+    logging.LogRecord("", 0, "", 0, "", None, None).__dict__.keys()
+) | {"asctime", "message", "taskName"}
 
 
 class JSONFormatter(logging.Formatter):
@@ -43,9 +54,14 @@ class JSONFormatter(logging.Formatter):
             "message": record.getMessage(),
             "logger": record.name,
         }
-        if hasattr(record, 'extra'):
-            log_obj.update(record.extra)
-        return json.dumps(log_obj)
+        # logging merges `extra={...}` into the record's __dict__ as top-level
+        # attributes — there is no record.extra — so read them back off the record.
+        for key, value in record.__dict__.items():
+            if key not in _RESERVED_LOG_ATTRS and not key.startswith("_"):
+                log_obj[key] = value
+        if record.exc_info:
+            log_obj["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_obj, default=str)
 
 
 handler = logging.StreamHandler()
@@ -78,9 +94,24 @@ FastAPIInstrumentor.instrument_app(app)
 # Rate-limit by API key so each caller gets its own independent bucket.
 # Without this, one bad client can saturate the service and starve legitimate traffic.
 # This is the application-layer defense. ALB + WAF handle the network layer in AWS.
+#
+# Behind nginx or an ALB, request.client.host is the *proxy's* address, so every
+# unauthenticated caller would share one bucket and the limit would be useless.
+# X-Forwarded-For is only trustworthy because our proxy overwrites it; a client
+# can forge the header when nothing strips it, so this is gated on TRUST_PROXY.
+TRUST_PROXY = os.getenv("TRUST_PROXY", "true").lower() in ("true", "1", "yes")
+
+
 def _rate_limit_key(request: Request) -> str:
     key = request.headers.get("X-API-Key")
-    return key if key else (request.client.host if request.client else "unknown")
+    if key:
+        return key
+    if TRUST_PROXY:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            # Leftmost entry is the original client; the rest are proxy hops.
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 limiter = Limiter(key_func=_rate_limit_key)
 app.state.limiter = limiter
@@ -91,10 +122,30 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 API_KEY = os.getenv("API_KEY", "")
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+# Fail closed, not open. Previously a missing API_KEY silently disabled auth, so
+# one unset variable in a deploy would expose every endpoint with no signal at
+# all. Auth is mandatory whenever a real datastore is attached, or when asked for
+# explicitly; otherwise we stay open for local development but say so loudly.
+REQUIRE_API_KEY = (
+    os.getenv("REQUIRE_API_KEY", "").lower() in ("true", "1", "yes")
+    or bool(os.getenv("DYNAMODB_TABLE", ""))
+)
+
+if REQUIRE_API_KEY and not API_KEY:
+    raise RuntimeError(
+        "API_KEY is required (REQUIRE_API_KEY is set, or DYNAMODB_TABLE is configured) "
+        "but is empty. Refusing to start rather than serving unauthenticated."
+    )
+if not API_KEY:
+    logger.warning(
+        "auth_disabled",
+        extra={"reason": "API_KEY not set", "mode": "local-development"},
+    )
+
 
 async def verify_api_key(api_key: Optional[str] = Security(_api_key_header)):
     if not API_KEY:
-        return  # Auth not configured — allow all (local development)
+        return  # Auth not configured — local development only; see REQUIRE_API_KEY
     if api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
@@ -130,16 +181,51 @@ def get_dynamodb_table():
     return boto3.resource("dynamodb", region_name=region).Table(DYNAMODB_TABLE)
 
 
-def db_list_ships() -> list:
+# A single scan() returns at most 1 MB and reports LastEvaluatedKey when there is
+# more. The previous code ignored that, so results were silently truncated once the
+# table outgrew one page — a wrong answer returned as a success. We now follow the
+# cursor, with a hard page cap so one request cannot read an unbounded table.
+#
+# scan() is still O(table): it reads every item and the filter is applied after the
+# read, so you pay for all of it. The correct long-term fix is a global secondary
+# index on `status` and a Query, which this cap is a stopgap for, not a substitute.
+MAX_SCAN_PAGES = int(os.getenv("MAX_SCAN_PAGES", "20"))
+
+
+class DataStoreUnavailable(Exception):
+    """Raised when the datastore is configured but unreachable."""
+
+
+def db_list_ships(status: Optional[str] = None) -> list:
     table = get_dynamodb_table()
     if table is None:
-        return list(_LOCAL_SHIPS.values())
+        items = list(_LOCAL_SHIPS.values())
+        return [s for s in items if s.get("status") == status] if status else items
+    kwargs = {}
+    if status:
+        kwargs["FilterExpression"] = Attr("status").eq(status)
+    items, pages = [], 0
     try:
-        result = table.scan()
-        return result.get("Items", [])
+        while True:
+            result = table.scan(**kwargs)
+            items.extend(result.get("Items", []))
+            pages += 1
+            last_key = result.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            if pages >= MAX_SCAN_PAGES:
+                logger.warning("scan_page_cap_reached", extra={
+                    "pages": pages, "returned": len(items),
+                    "detail": "result is incomplete; add a GSI and Query instead",
+                })
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return items
     except Exception as e:
-        logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
-        return list(_LOCAL_SHIPS.values())
+        # Do NOT fall back to the local sample data. Returning fabricated rows with
+        # a 200 is worse than failing: every caller downstream believes it is real.
+        logger.error("dynamodb_error", extra={"operation": "scan", "error": str(e)})
+        raise DataStoreUnavailable(str(e)) from e
 
 
 def db_get_ship(ship_id: str) -> dict | None:
@@ -150,8 +236,8 @@ def db_get_ship(ship_id: str) -> dict | None:
         result = table.get_item(Key={"ship_id": ship_id})
         return result.get("Item")
     except Exception as e:
-        logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
-        return _LOCAL_SHIPS.get(ship_id)
+        logger.error("dynamodb_error", extra={"operation": "get_item", "error": str(e)})
+        raise DataStoreUnavailable(str(e)) from e
 
 
 def db_put_ship(ship: dict) -> dict:
@@ -163,8 +249,8 @@ def db_put_ship(ship: dict) -> dict:
         table.put_item(Item=ship)
         return ship
     except ClientError as e:
-        logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
-        raise
+        logger.error("dynamodb_error", extra={"operation": "put_item", "error": str(e)})
+        raise DataStoreUnavailable(str(e)) from e
 
 
 def db_delete_ship(ship_id: str) -> bool:
@@ -178,8 +264,8 @@ def db_delete_ship(ship_id: str) -> bool:
         table.delete_item(Key={"ship_id": ship_id})
         return True
     except ClientError as e:
-        logger.error(json.dumps({"event": "dynamodb_error", "error": str(e)}))
-        raise
+        logger.error("dynamodb_error", extra={"operation": "delete_item", "error": str(e)})
+        raise DataStoreUnavailable(str(e)) from e
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -192,14 +278,22 @@ async def observability_middleware(request: Request, call_next):
 
     response.headers["X-Request-ID"] = request_id
 
+    # Label with the ROUTE TEMPLATE ("/api/v1/ships/{ship_id}"), never the raw path.
+    # Using request.url.path made every distinct ship_id its own time series, so the
+    # metric's cardinality grew with the data — the classic way to kill a Prometheus.
+    # Unmatched paths collapse to one bucket so scanners probing random URLs cannot
+    # inflate it either.
+    route = request.scope.get("route")
+    endpoint = getattr(route, "path", None) or "__unmatched__"
+
     REQUEST_COUNT.labels(
         method=request.method,
-        endpoint=request.url.path,
+        endpoint=endpoint,
         status_code=response.status_code
     ).inc()
     REQUEST_LATENCY.labels(
         method=request.method,
-        endpoint=request.url.path
+        endpoint=endpoint
     ).observe(duration)
     logger.info("request", extra={
         "request_id": request_id,
@@ -211,7 +305,22 @@ async def observability_middleware(request: Request, call_next):
     return response
 
 
+# A configured-but-unreachable datastore is a dependency failure, not a bug in the
+# request: 503 tells the caller to retry and keeps it out of our error-rate SLO for
+# application faults. Returning 500 would conflate the two.
+@app.exception_handler(DataStoreUnavailable)
+async def _datastore_unavailable_handler(request: Request, exc: DataStoreUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Data store unavailable", "request_id": request.headers.get("X-Request-ID")},
+        headers={"Retry-After": "5"},
+    )
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
+# /health is LIVENESS: is this process alive and able to answer at all. It must not
+# touch dependencies — if it did, one slow datastore would make Kubernetes restart
+# every healthy replica and turn a degradation into an outage.
 @app.get("/health")
 async def health_check():
     return {
@@ -220,6 +329,37 @@ async def health_check():
         "version": os.getenv('APP_VERSION', '1.0.0'),
         "storage": "dynamodb" if (DYNAMODB_AVAILABLE and DYNAMODB_TABLE) else "local"
     }
+
+
+# /ready is READINESS: can this instance actually serve traffic right now. This one
+# DOES check the datastore, because a replica that cannot reach it should be removed
+# from the Service endpoints rather than restarted. The previous code reported
+# "healthy" and storage "dynamodb" without ever contacting DynamoDB, so the signal
+# stayed green while every request failed.
+_READY_CACHE: dict = {"checked_at": 0.0, "ok": False, "error": None}
+READY_CACHE_TTL = float(os.getenv("READY_CACHE_TTL", "5"))
+
+
+@app.get("/ready")
+async def readiness_check(response: Response):
+    table = get_dynamodb_table()
+    if table is None:
+        return {"status": "ready", "storage": "local", "dependency_checked": False}
+
+    now = time.time()
+    if now - _READY_CACHE["checked_at"] > READY_CACHE_TTL:
+        try:
+            table.load()  # DescribeTable — cheap, and proves credentials and reachability
+            _READY_CACHE.update(checked_at=now, ok=True, error=None)
+        except Exception as e:
+            _READY_CACHE.update(checked_at=now, ok=False, error=str(e))
+            logger.error("readiness_failed", extra={"dependency": "dynamodb", "error": str(e)})
+
+    if not _READY_CACHE["ok"]:
+        response.status_code = 503
+        return {"status": "not_ready", "storage": "dynamodb",
+                "dependency_checked": True, "error": _READY_CACHE["error"]}
+    return {"status": "ready", "storage": "dynamodb", "dependency_checked": True}
 
 
 @app.get("/metrics")
@@ -247,13 +387,13 @@ async def list_ships(
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be >= 0")
 
-    all_ships = db_list_ships()
-
     if status:
         valid_statuses = {"active", "docked", "transit"}
         if status not in valid_statuses:
             raise HTTPException(status_code=400, detail=f"status must be one of {valid_statuses}")
-        all_ships = [s for s in all_ships if s.get("status") == status]
+
+    # Filter is pushed into the query rather than applied after the read.
+    all_ships = db_list_ships(status=status)
 
     total = len(all_ships)
     page = all_ships[offset : offset + limit]
