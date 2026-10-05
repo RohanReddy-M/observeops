@@ -22,7 +22,7 @@ boto3==1.43.72
 
 # OpenTelemetry — distributed tracing
 opentelemetry-api==1.28.0
-opentelemetry-sdk==1.28.0
+opentelemetry-sdk==1.45.0
 opentelemetry-instrumentation-fastapi==0.49b0
 opentelemetry-exporter-otlp-proto-grpc==1.28.0
 
