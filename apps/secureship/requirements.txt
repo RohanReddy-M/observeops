@@ -18,7 +18,7 @@ httpx==0.28.1
 # stop depending on it. Re-add (at a current version) if a form endpoint is added.
 
 # AWS SDK - DynamoDB integration (ships table)
-boto3==1.43.72
+boto3==1.43.107
 
 # OpenTelemetry — distributed tracing
 opentelemetry-api==1.28.0
