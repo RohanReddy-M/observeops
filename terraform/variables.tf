@@ -57,10 +57,15 @@ variable "admin_cidr" {
   }
 }
 
-variable "public_key_path" {
-  description = "Path to your SSH public key"
+variable "domain_name" {
+  description = <<-EOT
+    Public domain for the platform, e.g. "example.com". Leave empty (the default)
+    to run without one: the ALB serves plain HTTP on its own AWS DNS name and no
+    Route 53 zone or ACM certificate is created. Setting it requires the domain's
+    registrar to delegate to the hosted zone this creates; see the README.
+  EOT
   type        = string
-  default     = "~/.ssh/id_rsa.pub"
+  default     = ""
 }
 
 variable "app_instance_type" {

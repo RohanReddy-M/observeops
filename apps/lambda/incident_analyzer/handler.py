@@ -12,7 +12,7 @@ import boto3
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-RAGSERVICE_URL = os.environ.get("RAGSERVICE_URL", "https://secureship.click/ai/query")
+RAGSERVICE_URL = os.environ.get("RAGSERVICE_URL", "http://localhost/ai/query")  # set by Terraform
 NOTIFICATION_TOPIC_ARN = os.environ.get("NOTIFICATION_TOPIC_ARN", "")
 # SSM parameter NAME (not the secret value) — secret is fetched at cold-start
 # so it never appears in CloudTrail env-var logs or the Lambda console.

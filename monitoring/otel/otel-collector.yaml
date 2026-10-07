@@ -23,7 +23,7 @@ exporters:
     # Placeholder replaced at deploy time with the obs server private IP.
     # Tempo runs on the obs server; otel-collector runs on the app server.
     # Container name 'tempo' does not resolve across Docker hosts.
-    endpoint: __OBS_SERVER_IP__:4317
+    endpoint: obs-server:4317
     tls:
       insecure: true
 

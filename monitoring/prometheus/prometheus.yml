@@ -54,7 +54,7 @@ scrape_configs:
   # Container DNS does not cross Docker hosts — use the app server private IP.
   - job_name: 'secureship'
     static_configs:
-      - targets: ['__APP_SERVER_IP__:8001']
+      - targets: ['app-server:8001']
         labels:
           service: 'secureship'
           team: 'backend'
@@ -63,7 +63,7 @@ scrape_configs:
   # ─── StatusService ──────────────────────────────────────────────────────────
   - job_name: 'statusservice'
     static_configs:
-      - targets: ['__APP_SERVER_IP__:8002']
+      - targets: ['app-server:8002']
         labels:
           service: 'statusservice'
           team: 'backend'
@@ -72,12 +72,23 @@ scrape_configs:
   # Node exporter exposes Linux system metrics:
   # CPU usage, memory, disk space, network traffic, etc.
   # This is your infrastructure-level monitoring (as opposed to app-level)
+  # Host metrics, one job per host. Previously there was a single job that scraped
+  # the node-exporter running beside Prometheus but labelled it 'app-server', so the
+  # CPU, memory and disk alerts were watching the monitoring host while claiming to
+  # watch the application host, and the application host had no host metrics at all.
   - job_name: 'node-exporter'
     static_configs:
       - targets: ['node-exporter:9100']
         labels:
           service: 'node-exporter'
-          instance_type: 'app-server'
+          host: 'obs-server'
+
+  - job_name: 'node-exporter-app'
+    static_configs:
+      - targets: ['app-server:9100']
+        labels:
+          service: 'node-exporter'
+          host: 'app-server'
 
   # ─── Nginx ──────────────────────────────────────────────────────────────────
   # Nginx doesn't expose Prometheus metrics by default.
@@ -89,13 +100,18 @@ scrape_configs:
   # rag_queries_total, rag_documents_retrieved, vector_store_documents_total
   - job_name: 'ragservice'
     static_configs:
-      - targets: ['__APP_SERVER_IP__:8003']
+      - targets: ['app-server:8003']
         labels:
           service: 'ragservice'
           team: 'ai'
 
   # ─── Grafana ────────────────────────────────────────────────────────────────
   - job_name: 'grafana'
+    # Grafana is served from the /grafana/ sub-path (GF_SERVER_SERVE_FROM_SUB_PATH),
+    # so its metrics live there too. Scraping plain /metrics gets a redirect to the
+    # public root URL, which the scraper cannot follow from inside the network, so
+    # this target was permanently down and ServiceDown fired for it.
+    metrics_path: '/grafana/metrics'
     static_configs:
       - targets: ['grafana:3000']
         labels:
@@ -104,7 +120,7 @@ scrape_configs:
   # ─── LLM Alert Autopilot ────────────────────────────────────────────────────
   - job_name: 'llm-alert-autopilot'
     static_configs:
-      - targets: ['__APP_SERVER_IP__:8080']
+      - targets: ['app-server:8080']
         labels:
           service: 'llm-alert-autopilot'
           team: 'ai'

@@ -102,7 +102,7 @@ resource "aws_lambda_function" "incident_analyzer" {
 
   environment {
     variables = {
-      RAGSERVICE_URL         = "https://${var.domain_name}/ai/query"
+      RAGSERVICE_URL         = "${var.public_base_url}/ai/query"
       NOTIFICATION_TOPIC_ARN = aws_sns_topic.notifications.arn
       # Pass the SSM parameter NAME, not the secret value.
       # Lambda reads the actual secret from SSM at cold-start so it never
@@ -120,7 +120,7 @@ resource "aws_lambda_function_url" "incident_analyzer" {
   authorization_type = "NONE"
 
   cors {
-    allow_origins = ["https://${var.domain_name}"]
+    allow_origins = [var.public_base_url]
     allow_methods = ["POST"]
   }
 }

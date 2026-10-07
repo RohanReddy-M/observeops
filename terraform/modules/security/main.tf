@@ -143,6 +143,16 @@ resource "aws_security_group" "observability" {
     description = "Tempo OTel gRPC and HTTP from VPC only"
   }
 
+  # AlertManager API - scripts/chaos.sh runs on the app server and reads alert
+  # state from here to time the alerting pipeline. Not exposed beyond the VPC.
+  ingress {
+    from_port   = 9093
+    to_port     = 9093
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+    description = "AlertManager from VPC only"
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

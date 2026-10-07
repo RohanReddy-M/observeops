@@ -120,10 +120,10 @@ module "compute" {
   private_subnet_ids  = module.vpc.private_subnet_ids
   app_sg_id           = module.security.app_sg_id
   observability_sg_id = module.security.observability_sg_id
-  public_key_path     = var.public_key_path
   app_instance_type   = var.app_instance_type
   obs_instance_type   = var.obs_instance_type
   common_tags         = local.common_tags
+  public_base_url     = module.alb.public_url
 
   # Scopes the EC2 role's ECR pull permissions to just this project's four
   # repos instead of every repo in the account (previously Resource = "*").
@@ -211,7 +211,7 @@ module "alb" {
   public_subnet_ids = module.vpc.public_subnet_ids
   alb_sg_id         = module.security.alb_sg_id
   app_instance_id   = module.compute.app_instance_id
-  domain_name       = "secureship.click"
+  domain_name       = var.domain_name
   common_tags       = local.common_tags
 }
 
@@ -219,8 +219,12 @@ module "alb" {
 module "lambda" {
   source       = "./modules/lambda"
   project_name = var.project_name
-  domain_name  = "secureship.click"
-  common_tags  = local.common_tags
+  # Only aws_lb.main feeds this output, so the Lambda waits for the load balancer to
+  # exist and nothing more. compute depends on this module and the ALB's target
+  # attachment depends on compute, but the graph stays acyclic because the load
+  # balancer itself depends on neither.
+  public_base_url = module.alb.public_url
+  common_tags     = local.common_tags
 }
 
 # ─── DynamoDB Module ──────────────────────────────────────────────────────────

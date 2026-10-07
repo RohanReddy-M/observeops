@@ -2,6 +2,7 @@ apiVersion: 1
 
 datasources:
   - name: Loki
+    uid: loki          # Tempo's traces-to-logs link references this uid
     type: loki
     access: proxy
     url: http://loki:3100

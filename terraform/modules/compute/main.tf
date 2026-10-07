@@ -9,16 +9,10 @@
 # - You can't trust monitoring that runs on the thing it's monitoring
 # - In production, observability infra is always separate
 
-# ─── SSH Key Pair ─────────────────────────────────────────────────────────────
-# Key pairs are used for SSH authentication.
-# AWS stores the PUBLIC key. You keep the PRIVATE key (.pem file).
-# Never share your .pem file. Never put it in git.
-resource "aws_key_pair" "main" {
-  key_name   = "${var.project_name}-key"
-  public_key = file(var.public_key_path)
-
-  tags = var.common_tags
-}
+# No SSH key pair. Port 22 is not open in any security group and all access is
+# through SSM Session Manager (ADR-002). A key pair used to be created here and
+# installed on both instances anyway: unusable, but still a credential on the box
+# and a file every operator had to have before `terraform apply` would run.
 
 # ─── IAM Role for EC2 ─────────────────────────────────────────────────────────
 # Instead of putting AWS credentials on the EC2 instance (dangerous),
@@ -151,9 +145,6 @@ resource "aws_instance" "app" {
   # Attach IAM role for ECR access
   iam_instance_profile = aws_iam_instance_profile.ec2.name
 
-  # SSH key pair
-  key_name = aws_key_pair.main.key_name
-
   # Root volume: 20GB SSD
   # Docker images + logs can consume significant space
   root_block_device {
@@ -181,6 +172,11 @@ resource "aws_instance" "app" {
     aws_region   = var.aws_region
   }))
 
+  # user_data reads the API key from SSM at first boot. Without this the instance
+  # could boot before the parameter exists, start secureship with no key, and have
+  # it refuse to start (auth is fail-closed once a DynamoDB table is configured).
+  depends_on = [aws_ssm_parameter.secureship_api_key]
+
   tags = merge(var.common_tags, {
     Name = "${var.project_name}-app-server"
     Role = "application"
@@ -195,7 +191,6 @@ resource "aws_instance" "observability" {
   subnet_id              = var.private_subnet_ids[1]
   vpc_security_group_ids = [var.observability_sg_id]
   iam_instance_profile   = aws_iam_instance_profile.ec2.name
-  key_name               = aws_key_pair.main.key_name
 
   root_block_device {
     volume_size = 30 # Prometheus TSDB and Loki need more space
@@ -208,9 +203,10 @@ resource "aws_instance" "observability" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data_obs.sh", {
-    project_name  = var.project_name
-    app_server_ip = aws_instance.app.private_ip
-    aws_region    = var.aws_region
+    project_name    = var.project_name
+    app_server_ip   = aws_instance.app.private_ip
+    aws_region      = var.aws_region
+    public_base_url = var.public_base_url
   }))
 
   tags = merge(var.common_tags, {
@@ -219,6 +215,26 @@ resource "aws_instance" "observability" {
   })
 
   depends_on = [aws_instance.app]
+}
+
+# ─── SecureShip API key ───────────────────────────────────────────────────────
+# Generated here, stored encrypted in SSM, read by user_data at boot and by
+# deploy.sh on every deploy. It never appears in git, in a tfvars file or in CI.
+# (It is in Terraform state, which is why the S3 backend has encryption enabled.)
+#
+# Before this existed nothing ever supplied API_KEY, so the API ran with
+# authentication switched off in every environment it was deployed to.
+resource "random_password" "secureship_api_key" {
+  length  = 40
+  special = false # sent as an HTTP header and written to a dotenv file; keep it shell-safe
+}
+
+resource "aws_ssm_parameter" "secureship_api_key" {
+  name        = "/${var.project_name}/production/secureship_api_key"
+  description = "X-API-Key for the SecureShip API"
+  type        = "SecureString"
+  value       = random_password.secureship_api_key.result
+  tags        = var.common_tags
 }
 
 resource "aws_ssm_parameter" "obs_server_ip" {

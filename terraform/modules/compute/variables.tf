@@ -33,10 +33,6 @@ variable "observability_sg_id" {
   type = string
 }
 
-variable "public_key_path" {
-  type    = string
-  default = "~/.ssh/id_rsa.pub"
-}
 
 variable "common_tags" {
   type    = map(string)
@@ -47,4 +43,10 @@ variable "ecr_repository_arns" {
   description = "ARNs of the project's own ECR repositories — scopes the EC2 role's pull permissions to just these instead of every repo in the account."
   type        = list(string)
   default     = []
+}
+
+variable "public_base_url" {
+  description = "Base URL the platform is served on. Written to .env on the observability server so Prometheus and Grafana generate correct external links."
+  type        = string
+  default     = "http://localhost"
 }

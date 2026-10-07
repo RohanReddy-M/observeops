@@ -35,11 +35,18 @@ log_info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# sed's replacement text treats a bare & as "insert the whole match" and \ as an
-# escape — an SSM-stored URL that happens to contain either (plausible for any
-# URL with query parameters) would silently substitute the wrong text instead of
-# erroring, and `sed -i` would still report success. Escape both before use.
-sed_escape_repl() { printf '%s' "$1" | sed -e 's/[\&]/\\&/g'; }
+# Read one parameter from SSM. Empty string when it does not exist.
+ssm_get() {   # ssm_get <name> [--with-decryption]
+    aws ssm get-parameter --name "/observeops/production/$1" --region "$AWS_REGION" \
+        ${2:+$2} --query "Parameter.Value" --output text 2>/dev/null || echo ""
+}
+
+# Set KEY=VALUE in .env: replace the line if present, append otherwise.
+set_env() {   # set_env KEY VALUE
+    touch "$APP_DIR/.env"
+    sed -i "/^$1=/d" "$APP_DIR/.env" 2>/dev/null || true
+    printf '%s=%s\n' "$1" "$2" >> "$APP_DIR/.env"
+}
 
 # ─── Pre-Deploy Checks ────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════"
@@ -63,7 +70,7 @@ if [ -z "$ECR_REGISTRY" ] && [ "$1" != "--local" ] && [ "$1" != "--rollback" ]; 
 fi
 
 # Verify critical secrets exist in SSM (warn only — don't block deploy)
-for secret in "slack_webhook_critical" "lambda_incident_url" "groq_api_key"; do
+for secret in "groq_api_key" "secureship_api_key" "obs_server_ip"; do
     if ! aws ssm get-parameter --name "/observeops/production/$secret" \
         --region "$AWS_REGION" >/dev/null 2>&1; then
         log_warning "SSM secret '$secret' not found — some features may not work"
@@ -73,8 +80,13 @@ done
 # Remove unused Docker images before checking disk space.
 # 200+ CI runs each pull new images — without this the 20GB root volume fills
 # in a few weeks and every subsequent deploy fails the 2GB free check.
-log_info "Pruning unused Docker images..."
-docker image prune -a -f 2>/dev/null || true
+# Not during a rollback: by then the previous image is no longer used by any
+# container, so "prune unused" would delete exactly the image we are about to
+# roll back to and force a re-pull in the middle of an incident.
+if [ "$1" != "--rollback" ]; then
+    log_info "Pruning unused Docker images..."
+    docker image prune -a -f 2>/dev/null || true
+fi
 
 # Verify disk space — need at least 2GB free to pull/build images
 AVAILABLE_KB=$(df /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}' || df / | awk 'NR==2 {print $4}')
@@ -87,11 +99,26 @@ fi
 # ─── Save Current Version for Rollback ───────────────────────────────────────
 # Before deploying, save which image is currently running
 # If the new deployment fails, we use this to roll back
+#
+# Two conditions, both of which this block used to ignore:
+#
+#  1. Not when we ARE the rollback. A failed deploy re-invokes this script with
+#     --rollback, and this block runs before the rollback handler below. At that
+#     moment the running secureship container is the new, broken one, so recording
+#     "the current image" overwrote the rollback target with the very image that
+#     had just failed, and the "rollback" redeployed it.
+#  2. Only when the running container is healthy. An image that is up but failing
+#     its health check is not a version worth returning to.
 ROLLBACK_FILE="/opt/observeops/.previous-version"
-if docker ps --format '{{.Image}}' | grep -q secureship; then
-    PREVIOUS_IMAGE=$(docker ps --format '{{.Image}}' | grep secureship)
-    echo "$PREVIOUS_IMAGE" > "$ROLLBACK_FILE"
-    log_info "Saved rollback version: $PREVIOUS_IMAGE"
+if [ "$1" != "--rollback" ]; then
+    CURRENT_IMAGE=$(docker inspect --format '{{.Config.Image}}' secureship 2>/dev/null || echo "")
+    CURRENT_HEALTH=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' secureship 2>/dev/null || echo "none")
+    if [ -n "$CURRENT_IMAGE" ] && [ "$CURRENT_HEALTH" = "healthy" ]; then
+        echo "$CURRENT_IMAGE" > "$ROLLBACK_FILE"
+        log_info "Saved rollback version: $CURRENT_IMAGE"
+    elif [ -n "$CURRENT_IMAGE" ]; then
+        log_warning "Running secureship ($CURRENT_IMAGE) is '$CURRENT_HEALTH', not healthy — keeping the existing rollback target"
+    fi
 fi
 
 # ─── Handle Rollback ─────────────────────────────────────────────────────────
@@ -113,16 +140,24 @@ if [ "$1" == "--rollback" ]; then
     # inherited from the failed run's environment.
     export IMAGE_TAG="${PREVIOUS_IMAGE##*:}"
     export ECR_REGISTRY="${PREVIOUS_IMAGE%/secureship:*}"
+    # Record it, for the same reason a deploy does (see "Refresh .env" below): a
+    # reboot must bring back the version we rolled back to, not the one that failed.
+    set_env IMAGE_TAG "$IMAGE_TAG"
+    set_env ECR_REGISTRY "$ECR_REGISTRY"
     docker compose -f "$APP_DIR/docker-compose.yml" up -d secureship statusservice ragservice
 
-    log_info "Rollback complete."
-    sleep 10
-    if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
-        log_info "Rollback verified — SecureShip is healthy ✓"
-    else
-        log_error "Rollback verification failed. Manual intervention required."
-    fi
-    exit 0
+    log_info "Rollback issued. Verifying..."
+    for _ in $(seq 1 12); do
+        if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
+            log_info "Rollback verified — SecureShip is healthy on $PREVIOUS_IMAGE ✓"
+            exit 0
+        fi
+        sleep 5
+    done
+    # A rollback that did not restore service must not report success: the caller
+    # (CI, or the failed deploy above) needs a non-zero exit to know a human is needed.
+    log_error "Rollback verification failed after 60s. Manual intervention required."
+    exit 2
 fi
 
 # ─── ECR Login ────────────────────────────────────────────────────────────────
@@ -145,6 +180,59 @@ if [ "$1" != "--local" ] && [ -n "$ECR_REGISTRY" ]; then
 else
     log_info "Building images locally..."
     docker compose -f "$APP_DIR/docker-compose.yml" build secureship statusservice ragservice
+fi
+
+# ─── Refresh .env ─────────────────────────────────────────────────────────────
+# This runs BEFORE any container is started, because the containers read these
+# values at start. It used to run after the services were already up, which only
+# worked because nothing in .env was required for startup. SECURESHIP_API_KEY is:
+# secureship refuses to start without it whenever a DynamoDB table is configured.
+#
+# Nothing below edits a tracked config file. nginx.conf, the OTel collector config
+# and alertmanager.yml used to be rewritten in place with sed on every deploy; they
+# now refer to the other host by name ("obs-server", "app-server"), and compose maps
+# that name to the IP held in .env via extra_hosts.
+log_info "Refreshing .env from SSM..."
+
+GROQ_KEY=$(ssm_get groq_api_key --with-decryption)
+if [ -n "$GROQ_KEY" ]; then
+    set_env GROQ_API_KEY "$GROQ_KEY"
+    log_info "GROQ_API_KEY refreshed ✓"
+else
+    log_warning "GROQ_API_KEY not found in SSM — LLM diagnosis will be disabled"
+fi
+
+SECURESHIP_KEY=$(ssm_get secureship_api_key --with-decryption)
+if [ -n "$SECURESHIP_KEY" ]; then
+    set_env SECURESHIP_API_KEY "$SECURESHIP_KEY"
+    log_info "SECURESHIP_API_KEY refreshed ✓"
+else
+    log_warning "secureship_api_key not found in SSM — secureship will refuse to start if DYNAMODB_TABLE is set"
+fi
+
+# Record which images this deploy runs. docker-compose.yml resolves image names from
+# ECR_REGISTRY and IMAGE_TAG; CI passes them only as environment variables for this
+# one invocation. Without writing them down, any later `docker compose up` that
+# does not have them in its environment — the systemd unit after a reboot, or a
+# person on the box — resolves to observeops/<service>:local and silently replaces
+# the deployed version with a build of whatever happens to be checked out.
+if [ -n "$ECR_REGISTRY" ] && [ "$1" != "--local" ]; then
+    set_env ECR_REGISTRY "$ECR_REGISTRY"
+    set_env IMAGE_TAG "${IMAGE_TAG:-latest}"
+fi
+
+OBS_IP="${OBS_SERVER_IP:-$(ssm_get obs_server_ip)}"
+if [ -n "$OBS_IP" ]; then
+    # OBS_SERVER_IP: what "obs-server" resolves to for nginx and the OTel collector.
+    # LOKI_HOST: used by promtail to ship app-server logs to Loki on the obs server.
+    # LOKI_URL / GRAFANA_URL: used by llm-alert-autopilot.
+    set_env OBS_SERVER_IP "$OBS_IP"
+    set_env LOKI_HOST "$OBS_IP"
+    set_env LOKI_URL "http://${OBS_IP}:3100"
+    set_env GRAFANA_URL "http://${OBS_IP}:3000"
+    log_info "Observability server address written to .env: ${OBS_IP} ✓"
+else
+    log_warning "Obs server IP not found — Grafana/Prometheus proxy, traces and log shipping will not work"
 fi
 
 # ─── Deploy ───────────────────────────────────────────────────────────────────
@@ -256,134 +344,28 @@ print(json.loads(resp.read()).get('chunks_created', 0))
     log_info "Ingested ${INGESTED} chunks from runbooks into RAGService ✓"
 fi
 
-log_info "Injecting obs server IP into nginx config..."
-OBS_IP="${OBS_SERVER_IP:-$(aws ssm get-parameter \
-    --name "/observeops/production/obs_server_ip" \
-    --region "$AWS_REGION" \
-    --query "Parameter.Value" \
-    --output text 2>/dev/null || echo "")}"
-
-git -C "$APP_DIR" checkout HEAD -- nginx/nginx.conf
-
-if [ -n "$OBS_IP" ]; then
-    # Write via cat > (not sed -i) to preserve the inode Docker has bind-mounted.
-    # sed -i replaces the inode; Docker's bind mount then points to the old orphaned
-    # inode and nginx never sees the new content even after reload.
-    sed "s|__OBS_SERVER_IP__|$(sed_escape_repl "$OBS_IP")|g" "$APP_DIR/nginx/nginx.conf" > /tmp/nginx_injected.conf
-    cat /tmp/nginx_injected.conf > "$APP_DIR/nginx/nginx.conf"
-    log_info "Obs server IP injected: ${OBS_IP} ✓"
-else
-    log_warning "Obs server IP not found in SSM — Grafana/Prometheus proxy will not work"
-fi
-
-log_info "Injecting Lambda Function URL into AlertManager config..."
-LAMBDA_URL=$(aws ssm get-parameter \
-    --name "/observeops/production/lambda_incident_url" \
-    --region "$AWS_REGION" \
-    --query "Parameter.Value" \
-    --output text 2>/dev/null || echo "")
-
-# Always regenerate from the git-tracked template so the placeholder is present.
-# Using sed -i without first restoring from git would leave the old URL on the
-# second and subsequent deploys (the placeholder was already replaced).
-git -C "$APP_DIR" checkout HEAD -- monitoring/alertmanager/alertmanager.yml
-
-if [ -n "$LAMBDA_URL" ]; then
-    sed -i "s|__LAMBDA_FUNCTION_URL__|$(sed_escape_repl "$LAMBDA_URL")|g" \
-        "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
-    log_info "Lambda URL injected ✓"
-else
-    log_warning "Lambda Function URL not found in SSM — alertmanager will use placeholder URL"
-fi
-
-log_info "Injecting Slack webhook URLs into AlertManager config..."
-SLACK_CRITICAL=$(aws ssm get-parameter \
-    --name "/observeops/production/slack_webhook_critical" \
-    --region "$AWS_REGION" \
-    --with-decryption \
-    --query "Parameter.Value" \
-    --output text 2>/dev/null || echo "")
-
-SLACK_WARNINGS=$(aws ssm get-parameter \
-    --name "/observeops/production/slack_webhook_warnings" \
-    --region "$AWS_REGION" \
-    --with-decryption \
-    --query "Parameter.Value" \
-    --output text 2>/dev/null || echo "")
-
-if [ -n "$SLACK_CRITICAL" ]; then
-    sed -i "s|__SLACK_WEBHOOK_CRITICAL__|$(sed_escape_repl "$SLACK_CRITICAL")|g" \
-        "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
-    log_info "Slack critical webhook injected ✓"
-else
-    log_warning "Slack critical webhook not in SSM — #alerts-critical will not receive messages"
-fi
-
-if [ -n "$SLACK_WARNINGS" ]; then
-    sed -i "s|__SLACK_WEBHOOK_WARNINGS__|$(sed_escape_repl "$SLACK_WARNINGS")|g" \
-        "$APP_DIR/monitoring/alertmanager/alertmanager.yml"
-    log_info "Slack warnings webhook injected ✓"
-else
-    log_warning "Slack warnings webhook not in SSM — #alerts-warnings will not receive messages"
-fi
-
-log_info "Injecting obs server IP into OTel Collector config..."
-git -C "$APP_DIR" checkout HEAD -- monitoring/otel/otel-collector.yaml
-
-if [ -n "$OBS_IP" ]; then
-    sed "s|__OBS_SERVER_IP__|$(sed_escape_repl "$OBS_IP")|g" "$APP_DIR/monitoring/otel/otel-collector.yaml" > /tmp/otel_injected.yaml
-    cat /tmp/otel_injected.yaml > "$APP_DIR/monitoring/otel/otel-collector.yaml"
-    log_info "OTel Collector Tempo endpoint set to ${OBS_IP}:4317 ✓"
-else
-    log_warning "Obs server IP not found — otel-collector will fail to export traces"
-fi
-
-log_info "Refreshing secrets in .env..."
-# Re-read GROQ_API_KEY from SSM on every deploy so a transient SSM failure
-# at first-boot (user_data) doesn't leave the key missing indefinitely.
-GROQ_KEY=$(aws ssm get-parameter \
-    --name "/observeops/production/groq_api_key" \
-    --region "$AWS_REGION" \
-    --with-decryption \
-    --query "Parameter.Value" \
-    --output text 2>/dev/null || echo "")
-
-touch "$APP_DIR/.env"
-if [ -n "$GROQ_KEY" ]; then
-    sed -i '/^GROQ_API_KEY=/d' "$APP_DIR/.env"
-    echo "GROQ_API_KEY=${GROQ_KEY}" >> "$APP_DIR/.env"
-    log_info "GROQ_API_KEY refreshed ✓"
-else
-    log_warning "GROQ_API_KEY not found in SSM — LLM diagnosis will be disabled"
-fi
-
-if [ -n "$OBS_IP" ]; then
-    # Remove any existing entries then append updated values.
-    # LOKI_HOST: used by promtail (-config.expand-env=true) to ship app server logs cross-host.
-    # LOKI_URL/GRAFANA_URL: used by llm-alert-autopilot to query Loki and Grafana.
-    sed -i '/^LOKI_HOST=/d; /^LOKI_URL=/d; /^GRAFANA_URL=/d' "$APP_DIR/.env" 2>/dev/null || true
-    echo "LOKI_HOST=${OBS_IP}" >> "$APP_DIR/.env"
-    echo "LOKI_URL=http://${OBS_IP}:3100" >> "$APP_DIR/.env"
-    echo "GRAFANA_URL=http://${OBS_IP}:3000" >> "$APP_DIR/.env"
-    log_info "LOKI_HOST, LOKI_URL and GRAFANA_URL written to .env ✓"
-fi
-
 log_info "Starting app-server-only monitoring services..."
 # Prometheus, Grafana, Loki, AlertManager run on the OBS SERVER — not here.
 # The app server only runs: OTel Collector (receives traces, forwards to Tempo on obs server)
 # and LLM Alert Autopilot (receives AlertManager webhooks, calls Groq, posts to Slack).
-# --force-recreate: otel-collector config was just rewritten above; container must restart
-# to pick up the new Tempo endpoint. llm-alert-autopilot needs LOKI_URL/GRAFANA_URL from .env.
-docker compose -f "$APP_DIR/docker-compose.yml" up -d --force-recreate otel-collector llm-alert-autopilot promtail
+# node-exporter runs here too: without it this host had no CPU, memory or disk
+# metrics at all, and the disk-space alerts were watching only the obs server.
+# compose recreates a container whenever its resolved config changed (including an
+# extra_hosts address that came from .env), so no --force-recreate is needed.
+#
+# --no-deps: docker-compose.yml declares Loki as a dependency of promtail and the
+# autopilot, and Tempo as a dependency of the collector. That is right on one host,
+# but here they live on the obs server; without the flag compose would start a
+# second, unused Loki and Tempo on this 2 GB instance.
+docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps otel-collector llm-alert-autopilot promtail node-exporter
 
 # nginx resolves upstream hostnames at startup — start it after app containers
 # are registered in Docker DNS to prevent "host not found" crash loop.
 sleep 3
 log_info "Starting nginx..."
-# --force-recreate ensures nginx restarts and re-establishes its bind mount to
-# nginx/nginx.conf. git checkout earlier in this script replaces the file's
-# inode; without force-recreate Docker keeps the old inode and nginx never sees
-# the injected obs server IP.
+# --force-recreate: `git pull` replaces nginx.conf with a new inode, and a bind
+# mount keeps pointing at the old one, so a plain `up -d` could leave nginx
+# serving the previous config.
 docker compose -f "$APP_DIR/docker-compose.yml" up -d --force-recreate nginx
 
 # ─── Post-Deploy Smoke Tests ──────────────────────────────────────────────────
@@ -411,6 +393,31 @@ check_endpoint "http://localhost:8002/health"     "StatusService"
 check_endpoint "http://localhost:8003/health"     "RAGService"
 check_endpoint "http://localhost:8080/health"     "LLM Alert Autopilot"
 
+# The five checks above prove five processes answer. The next three prove the
+# service works: /ready fails unless DynamoDB is reachable, the authenticated call
+# exercises auth and the datastore end to end, and the unauthenticated call must be
+# REFUSED — a deploy that quietly came up with auth disabled is a failed deploy.
+check_endpoint "http://localhost:8001/ready"      "SecureShip readiness (datastore reachable)"
+
+SMOKE_KEY=$(grep -E '^SECURESHIP_API_KEY=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2-)
+if [ -n "$SMOKE_KEY" ]; then
+    if curl -sf -H "X-API-Key: ${SMOKE_KEY}" "http://localhost:8001/api/v1/ships?limit=1" > /dev/null 2>&1; then
+        log_info "✓ Authenticated API call succeeded"
+    else
+        log_error "✗ Authenticated API call FAILED"
+        SMOKE_TESTS_PASSED=false
+    fi
+    UNAUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8001/api/v1/ships?limit=1" 2>/dev/null || echo "000")
+    if [ "$UNAUTH_CODE" = "401" ]; then
+        log_info "✓ Unauthenticated API call correctly refused (401)"
+    else
+        log_error "✗ Unauthenticated API call returned ${UNAUTH_CODE}, expected 401 — auth is not enforced"
+        SMOKE_TESTS_PASSED=false
+    fi
+else
+    log_warning "No SECURESHIP_API_KEY in .env — skipping authenticated smoke tests"
+fi
+
 if [ "$SMOKE_TESTS_PASSED" = false ]; then
     log_error "Smoke tests failed! Initiating rollback..."
     "$0" --rollback
@@ -429,9 +436,9 @@ echo "  StatusService:       http://localhost:8002"
 echo "  RAGService:          http://localhost:8003"
 echo "  LLM Alert Autopilot: http://localhost:8080"
 echo ""
-echo "Monitoring (on obs server — access via secureship.click):"
-echo "  Grafana:    https://secureship.click/grafana/"
-echo "  Prometheus: https://secureship.click/prometheus/"
+echo "Monitoring (on the obs server, proxied by nginx):"
+echo "  Grafana:    <public URL>/grafana/"
+echo "  Prometheus: <public URL>/prometheus/"
 echo ""
 
 # ─── Register deployment with LLM Alert Autopilot (DORA + LLM context) ───────

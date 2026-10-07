@@ -40,10 +40,20 @@ output "alb_dns_name" {
 
 output "live_url" {
   description = "Public URL of the application"
-  value       = "https://secureship.click"
+  value       = module.alb.public_url
 }
 
 output "route53_name_servers" {
-  description = "NS records — infra-up.sh syncs these to the domain registrar automatically"
+  description = "NS records of the hosted zone (empty without a domain). Set these at the registrar when the zone is first created."
   value       = module.alb.route53_name_servers
+}
+
+output "app_instance_id" {
+  description = "Instance ID of the app server. infra-up.sh waits for its bootstrap and stores it as the EC2_INSTANCE_ID secret."
+  value       = module.compute.app_instance_id
+}
+
+output "obs_instance_id" {
+  description = "Instance ID of the observability server"
+  value       = module.compute.obs_instance_id
 }

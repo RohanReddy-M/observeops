@@ -3,47 +3,52 @@
 # Prometheus detects the problem.
 # AlertManager decides: who gets notified, how, and how often.
 #
-# SETUP REQUIRED: Replace YOUR_SLACK_WEBHOOK_URL with your actual webhook.
-# How to get one:
-# 1. Go to https://api.slack.com/messaging/webhooks
-# 2. Create a Slack app, enable "Incoming Webhooks"
-# 3. Add webhook to a channel
-# 4. Copy the webhook URL
+# This file is identical in local development and in production. Nothing rewrites
+# it at deploy time:
+#   - "app-server" resolves via extra_hosts in docker-compose.yml (the Docker host
+#     locally, the application server's private IP in production).
+#   - Webhook URLs are secrets and are read from files under
+#     /etc/alertmanager/secrets at notify time. See secrets/README.md.
 
 global:
-  # How long to wait before re-sending a resolved alert
+  # How long AlertManager keeps an alert active after it stops receiving it from
+  # Prometheus, before declaring it resolved on its own.
   resolve_timeout: 5m
 
 # ─── Routing Tree ─────────────────────────────────────────────────────────────
 # Every alert enters at the root route and gets matched against routes.
-# First match wins. Unmatched alerts go to the default receiver.
+# First match wins unless `continue: true` is set. Unmatched alerts go to the
+# default receiver.
 route:
-  # Default: log to null receiver when Slack is not configured (local dev).
-  # In production, change this to 'slack-warnings' and set SLACK_WEBHOOK_URL.
+  # Default: the null receiver, for alerts that match no severity route.
   receiver: 'null'
 
   # Group alerts together to avoid notification spam.
   # All alerts with same alertname+job get grouped into one notification.
   group_by: ['alertname', 'job']
 
-  # Wait 30s before sending first notification (collect related alerts)
+  # Wait 30s after the FIRST alert of a new group before notifying, to collect
+  # related alerts into one message. This delays the notification only: the alert
+  # is already visible in AlertManager's API and UI the moment Prometheus sends it.
   group_wait: 30s
 
-  # Wait 5m before sending notifications for a new group
+  # Wait 5m before notifying about NEW alerts added to an already-notified group
   group_interval: 5m
 
-  # Wait 4h before re-sending the same alert
+  # Wait 4h before re-sending a notification for alerts that are still firing
   repeat_interval: 4h
 
   # ─── Sub-routes ─────────────────────────────────────────────────────────────
   routes:
-    # Watchdog deadman switch: intercept BEFORE llm-autopilot so it is never
-    # "diagnosed" by the LLM (it's not a real alert) and never spams Slack.
-    # In production: configure HEALTHCHECKS_PING_URL in SSM and set it here.
-    # healthchecks.io sends you an email if pings stop for > 5 minutes.
+    # Watchdog deadman switch: intercepted BEFORE llm-autopilot so it is never
+    # "diagnosed" by the LLM (it is not a real alert) and never reaches Slack.
+    # It is re-sent every 5 minutes to an external heartbeat monitor; if those
+    # pings stop, the external service raises the alarm that this stack cannot
+    # raise about itself.
     - match:
         alertname: Watchdog
       receiver: 'watchdog-sink'
+      group_wait: 0s
       repeat_interval: 5m
       continue: false
 
@@ -67,36 +72,42 @@ route:
 
 receivers:
   # Null receiver: silently accepts alerts, sends nothing.
-  # Used as the default when Slack is not configured (local dev / CI).
   - name: 'null'
 
-  # Watchdog sink: accepts the deadman switch heartbeat.
-  # In production: replace this with a webhook_config pointing to healthchecks.io.
-  # How to set up healthchecks.io (free tier):
-  #   1. Create account at healthchecks.io
-  #   2. Create a new check with period=5min, grace=10min
-  #   3. Copy the ping URL and store in SSM: /observeops/production/healthchecks_url
-  #   4. Replace 'null' below with:
-  #      webhook_configs:
-  #        - url: '<your-healthchecks-ping-url>'
-  #          send_resolved: false
+  # Watchdog sink: the external leg of the deadman switch.
+  # The ping URL lives in SSM at /observeops/production/healthchecks_url and is
+  # written to this file by user_data on the observability server. Until that
+  # parameter exists the file is absent, every ping attempt fails, and AlertManager
+  # logs a notify error every 5 minutes. That noise is deliberate: a deadman switch
+  # that is not connected to anything should not be quiet about it.
+  #
+  # To connect it (healthchecks.io free tier, or any heartbeat monitor):
+  #   1. Create a check with period 5 minutes and grace 10 minutes
+  #   2. aws ssm put-parameter --type SecureString \
+  #        --name /observeops/production/healthchecks_url --value '<ping URL>'
+  #   3. Rebuild the observability server, or write the URL to
+  #      monitoring/alertmanager/secrets/healthchecks_url and reload AlertManager
   - name: 'watchdog-sink'
-
-  # LLM Alert Autopilot: containerised webhook receiver — queries Loki for log context,
-  # calls Groq LLM for diagnosis, sends Slack notification.
-  # Runs in the same Docker network so it can reach Loki directly.
-  - name: 'llm-autopilot'
     webhook_configs:
-      # Placeholder replaced at deploy time with the app server private IP.
-      # AlertManager runs on obs server — container name won't resolve cross-host.
-      - url: '__LLM_AUTOPILOT_WEBHOOK__'
+      - url_file: '/etc/alertmanager/secrets/healthchecks_url'
         send_resolved: false
 
-  - name: 'lambda-incident-analyzer'
+  # LLM Alert Autopilot: webhook receiver on the application server. It queries
+  # Loki for log context, calls the LLM for a diagnosis and posts it to Slack.
+  #
+  # send_resolved MUST be true. The autopilot computes MTTR from resolved
+  # notifications (startsAt -> endsAt); with send_resolved false it never received
+  # one, alert_mttr_seconds never got an observation, and the MTTR panels on the
+  # DORA dashboard stayed empty. Resolved alerts are only recorded, never sent to
+  # the LLM.
+  - name: 'llm-autopilot'
+    webhook_configs:
+      - url: 'http://app-server:8080/webhook'
+        send_resolved: true
 
   - name: 'slack-critical'
     slack_configs:
-      - api_url: '__SLACK_WEBHOOK_CRITICAL__'
+      - api_url_file: '/etc/alertmanager/secrets/slack_webhook_critical'
         channel: '#alerts-critical'
         title: 'CRITICAL — {{ .GroupLabels.alertname }}'
         text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
@@ -104,7 +115,7 @@ receivers:
 
   - name: 'slack-warnings'
     slack_configs:
-      - api_url: '__SLACK_WEBHOOK_WARNINGS__'
+      - api_url_file: '/etc/alertmanager/secrets/slack_webhook_warnings'
         channel: '#alerts-warnings'
         title: 'WARNING — {{ .GroupLabels.alertname }}'
         text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'

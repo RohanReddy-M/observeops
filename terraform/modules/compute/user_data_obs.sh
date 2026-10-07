@@ -40,40 +40,47 @@ cd /opt/observeops
 git clone https://github.com/RohanReddy-M/observeops.git .
 chown -R ubuntu:ubuntu /opt/observeops
 
-# ── Point Prometheus at the App Server ───────────────────────────────────────
-# prometheus.yml uses __APP_SERVER_IP__ placeholders for targets that live on
-# the app server. Replace them with the actual private IP passed from Terraform.
-APP_IP="${app_server_ip}"
+# ── Environment ───────────────────────────────────────────────────────────────
+# No config file is edited here. prometheus.yml and alertmanager.yml refer to the
+# application host as "app-server"; docker-compose maps that name to APP_SERVER_IP
+# through extra_hosts. The same files therefore run unchanged on a laptop, where
+# the variable is unset and the name falls back to the Docker host.
+cat > /opt/observeops/.env <<EOF
+APP_SERVER_IP=${app_server_ip}
+PUBLIC_BASE_URL=${public_base_url}
+AWS_DEFAULT_REGION=${aws_region}
+EOF
+chmod 600 /opt/observeops/.env
+chown ubuntu:ubuntu /opt/observeops/.env
 
-sed -i "s|__APP_SERVER_IP__|$${APP_IP}|g" /opt/observeops/monitoring/prometheus/prometheus.yml
+# ── AlertManager secrets ──────────────────────────────────────────────────────
+# Webhook URLs are read by AlertManager from files (api_url_file / url_file), so
+# they never touch the tracked config. A missing parameter leaves the file absent;
+# AlertManager then logs a notify error for that receiver instead of failing.
+SECRETS_DIR=/opt/observeops/monitoring/alertmanager/secrets
+mkdir -p "$SECRETS_DIR"
 
-# ── Inject AlertManager Config ────────────────────────────────────────────────
-# Replace placeholder URLs with real values from SSM and from Terraform variables
-SLACK_CRITICAL=$(aws ssm get-parameter \
-  --name "/observeops/production/slack_webhook_critical" \
-  --with-decryption \
-  --region ${aws_region} \
-  --query 'Parameter.Value' \
-  --output text 2>/dev/null || echo "")
+write_secret() {   # write_secret <ssm name under /observeops/production/> <file name>
+  local value
+  value=$(aws ssm get-parameter --name "/observeops/production/$1" --with-decryption \
+    --region ${aws_region} --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  if [ -n "$value" ]; then
+    printf '%s' "$value" > "$SECRETS_DIR/$2"
+    echo "wrote secret file: $2"
+  else
+    echo "SSM parameter $1 not found - $2 not written"
+  fi
+}
 
-SLACK_WARNINGS=$(aws ssm get-parameter \
-  --name "/observeops/production/slack_webhook_warnings" \
-  --with-decryption \
-  --region ${aws_region} \
-  --query 'Parameter.Value' \
-  --output text 2>/dev/null || echo "")
+write_secret slack_webhook_critical slack_webhook_critical
+write_secret slack_webhook_warnings slack_webhook_warnings
+write_secret healthchecks_url       healthchecks_url        # deadman switch; optional
 
-LAMBDA_URL=$(aws ssm get-parameter \
-  --name "/observeops/production/lambda_incident_url" \
-  --region ${aws_region} \
-  --query 'Parameter.Value' \
-  --output text 2>/dev/null || echo "http://localhost:9999/unused")
-
-sed -i "s|__SLACK_WEBHOOK_CRITICAL__|$${SLACK_CRITICAL:-http://localhost:9999/unused}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
-sed -i "s|__SLACK_WEBHOOK_WARNINGS__|$${SLACK_WARNINGS:-http://localhost:9999/unused}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
-sed -i "s|__LAMBDA_FUNCTION_URL__|$${LAMBDA_URL}|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
-# LLM Autopilot webhook: alertmanager runs on obs server, autopilot on app server
-sed -i "s|__LLM_AUTOPILOT_WEBHOOK__|http://$${APP_IP}:8080/webhook|g" /opt/observeops/monitoring/alertmanager/alertmanager.yml
+# The AlertManager image runs as nobody (65534): make the files readable by it and
+# by nothing else.
+chown -R 65534:65534 "$SECRETS_DIR"
+chmod 500 "$SECRETS_DIR"
+find "$SECRETS_DIR" -type f ! -name README.md -exec chmod 400 {} +
 
 # ── Start Monitoring Services ─────────────────────────────────────────────────
 cd /opt/observeops
