@@ -20,7 +20,8 @@ resource "aws_dynamodb_table" "ships" {
   tags = var.common_tags
 }
 
-# Seed initial ship data via SSM — runs once after table creation
+# The table name, published where the app server's boot script and deploy.sh read
+# it. (Nothing seeds data: the table starts empty.)
 resource "aws_ssm_parameter" "dynamodb_table" {
   name  = "/${var.project_name}/production/dynamodb_ships_table"
   type  = "String"

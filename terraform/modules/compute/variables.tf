@@ -40,9 +40,13 @@ variable "common_tags" {
 }
 
 variable "ecr_repository_arns" {
-  description = "ARNs of the project's own ECR repositories — scopes the EC2 role's pull permissions to just these instead of every repo in the account."
+  description = "ARNs of this project's ECR repositories. The app server's role may pull from these and no others."
   type        = list(string)
-  default     = []
+}
+
+variable "dynamodb_table_arn" {
+  description = "ARN of the table SecureShip stores ships in. The app server's role is scoped to exactly this table."
+  type        = string
 }
 
 variable "public_base_url" {

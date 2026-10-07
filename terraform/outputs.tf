@@ -4,7 +4,7 @@ output "vpc_id" {
 }
 
 output "app_server_private_ip" {
-  description = "Private IP of app server (SSH via bastion or SSM)"
+  description = "Private IP of the app server (reach it with SSM Session Manager; there is no SSH)"
   value       = module.compute.app_server_private_ip
 }
 
@@ -56,4 +56,14 @@ output "app_instance_id" {
 output "obs_instance_id" {
   description = "Instance ID of the observability server"
   value       = module.compute.obs_instance_id
+}
+
+output "external_probe_rule_name" {
+  description = "EventBridge rule that schedules the outside-in probe. Created disabled; scripts/infra-up.sh enables it after the first successful deploy."
+  value       = module.lambda.external_probe_rule_name
+}
+
+output "grafana_admin_password_parameter" {
+  description = "SSM parameter holding the generated Grafana admin password (user: admin)."
+  value       = module.compute.grafana_admin_password_parameter
 }

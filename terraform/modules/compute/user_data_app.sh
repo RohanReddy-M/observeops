@@ -96,9 +96,7 @@ EOF
 if [ -n "$OBS_SERVER_IP" ]; then
   cat >> /opt/observeops/.env <<EOF
 OBS_SERVER_IP=$${OBS_SERVER_IP}
-LOKI_HOST=$${OBS_SERVER_IP}
 LOKI_URL=http://$${OBS_SERVER_IP}:3100
-GRAFANA_URL=http://$${OBS_SERVER_IP}:3000
 EOF
 fi
 
@@ -128,8 +126,8 @@ After=docker.service network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/observeops
-ExecStart=/usr/bin/docker compose up -d --no-deps secureship statusservice ragservice nginx llm-alert-autopilot otel-collector promtail node-exporter
-ExecStop=/usr/bin/docker compose stop secureship statusservice ragservice nginx llm-alert-autopilot otel-collector promtail node-exporter
+ExecStart=/usr/bin/docker compose up -d --no-deps secureship statusservice ragservice nginx llm-alert-autopilot otel-collector alloy node-exporter
+ExecStop=/usr/bin/docker compose stop secureship statusservice ragservice nginx llm-alert-autopilot otel-collector alloy node-exporter
 User=ubuntu
 Group=ubuntu
 

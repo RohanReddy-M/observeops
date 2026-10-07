@@ -12,41 +12,43 @@
 # Read every line of the plan before typing "yes".
 
 terraform {
-  required_version = ">= 1.5.0"
+  # 1.11 is the first release where S3 state locking (use_lockfile) is stable.
+  required_version = ">= 1.11.0"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 
   # ─── Remote State ───────────────────────────────────────────────────────────
-  # Terraform stores state (current infrastructure snapshot) in S3.
-  # WHY: If you store state locally and your laptop dies, you lose track
-  # of what Terraform created and can't manage it anymore.
-  # S3 + DynamoDB = safe, team-shareable state storage.
+  # State is the record of what Terraform created. Kept on a laptop it is lost
+  # with the laptop, and two people (or a person and CI) applying at once can
+  # corrupt it. So: stored in S3, encrypted, with a lock.
   #
-  # SETUP REQUIRED: Create these before running terraform init:
-  #   aws s3 mb s3://observeops-terraform-state-YOUR_ACCOUNT_ID
-  #   aws dynamodb create-table \
-  #     --table-name observeops-terraform-locks \
-  #     --attribute-definitions AttributeName=LockID,AttributeType=S \
-  #     --key-schema AttributeName=LockID,KeyType=HASH \
-  #     --billing-mode PAY_PER_REQUEST
-  # Partial backend config — key is injected at init time so each environment
-  # gets its own isolated state file:
+  # use_lockfile makes S3 itself hold the lock, as a small ".tflock" object next
+  # to the state, written with a conditional put so only one writer can win.
+  # This replaced a DynamoDB lock table: `dynamodb_table` is deprecated in the S3
+  # backend, and the table was one more thing to create by hand before the first
+  # `terraform init`.
+  #
+  # The key is supplied at init so each environment has its own state file:
   #   terraform init -backend-config=key=production/terraform.tfstate
-  #   terraform init -backend-config=key=staging/terraform.tfstate
+  # scripts/bootstrap-aws-account.sh creates the bucket.
   backend "s3" {
-    bucket         = "observeops-terraform-state-198239799708"
-    region         = "ap-south-1"
-    encrypt        = true
-    dynamodb_table = "observeops-terraform-locks"
+    bucket       = "observeops-terraform-state-198239799708"
+    region       = "ap-south-1"
+    encrypt      = true
+    use_lockfile = true
   }
 }
 
@@ -105,8 +107,7 @@ module "security" {
 
   project_name = var.project_name
   vpc_id       = module.vpc.vpc_id
-  vpc_cidr     = module.vpc.vpc_cidr
-  admin_cidr   = var.admin_cidr
+  enable_https = var.domain_name != ""
   common_tags  = local.common_tags
 }
 
@@ -125,8 +126,9 @@ module "compute" {
   common_tags         = local.common_tags
   public_base_url     = module.alb.public_url
 
-  # Scopes the EC2 role's ECR pull permissions to just this project's four
-  # repos instead of every repo in the account (previously Resource = "*").
+  dynamodb_table_arn = module.dynamodb.table_arn
+
+  # The app server's role may pull from these four repositories and no others.
   ecr_repository_arns = [
     aws_ecr_repository.secureship.arn,
     aws_ecr_repository.statusservice.arn,
@@ -151,7 +153,17 @@ locals {
 }
 
 # ─── ECR Repositories ─────────────────────────────────────────────────────────
-# ECR for RAGService
+# Private Docker registry: CI pushes the four service images here, the app
+# server pulls them.
+#
+# Tags are MUTABLE because the pipeline moves two tags on every build (`main`
+# and `latest`, used as the build cache source) besides the commit-SHA tag that
+# is actually deployed. So "one SHA tag = one image" is a convention the
+# pipeline follows, not something the registry enforces. See ADR-008.
+#
+# force_delete: `terraform destroy` removes the repositories with their images.
+# Right for a stack that is torn down between demonstrations, and the reason
+# every bring-up starts with a full image build.
 resource "aws_ecr_repository" "ragservice" {
   name                 = "${var.project_name}/ragservice"
   image_tag_mutability = "MUTABLE"
@@ -159,10 +171,6 @@ resource "aws_ecr_repository" "ragservice" {
   image_scanning_configuration { scan_on_push = true }
   tags = local.common_tags
 }
-
-
-# ECR = Elastic Container Registry = AWS's private Docker registry
-# We push our built images here, EC2 instances pull from here
 
 resource "aws_ecr_repository" "secureship" {
   name                 = "${var.project_name}/secureship"
@@ -200,8 +208,6 @@ resource "aws_ecr_repository" "llm_alert_autopilot" {
   tags = local.common_tags
 }
 
-# Auto-delete old images to control storage costs
-# Keep only the last 10 images per repository
 # ─── ALB + Route53 Module ────────────────────────────────────────────────────
 module "alb" {
   source = "./modules/alb"
@@ -235,9 +241,11 @@ module "dynamodb" {
 }
 
 # ─── AWS Budget Alert ─────────────────────────────────────────────────────────
-# Fires an email when monthly spend approaches ₹800 (~$10).
-# Prevents surprise bills — t3.micro + NAT Gateway + data transfer can add up.
-# This is FinOps thinking: own your cloud spend, don't just react to the bill.
+# Emails when the month's spend passes 80% of $10, or is forecast to pass $10.
+# The stack costs about $0.15 an hour while it is up (two t3.small, a NAT
+# gateway, a load balancer, three public IPv4 addresses), so roughly three days
+# of uptime reaches the limit. The point is to hear about a stack that was left
+# running before the bill says so.
 resource "aws_budgets_budget" "monthly" {
   name         = "${var.project_name}-monthly-budget"
   budget_type  = "COST"
@@ -265,6 +273,8 @@ resource "aws_budgets_budget" "monthly" {
 }
 
 # ─── ECR Lifecycle Policy ────────────────────────────────────────────────────
+# Keep the ten most recent images per repository and expire the rest, so storage
+# does not grow with every commit. Ten is also how far back a rollback can reach.
 locals {
   ecr_lifecycle_policy = jsonencode({
     rules = [{
