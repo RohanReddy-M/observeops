@@ -1,29 +1,30 @@
-# ─── GitHub Actions CI/CD Pipeline ───────────────────────────────────────────
-# This pipeline runs automatically when you push code to GitHub.
+# ─── ObserveOps CI/CD ─────────────────────────────────────────────────────────
 #
-# Flow:
-# Push to any branch → test + build
-# Push to main       → test + build + deploy to production (with approval)
+#   pull request to main      test
+#   push to main              test → scans → build 4 images → deploy
+#   manual run (on main)      the same as a push; scripts/infra-up.sh uses this
 #
-# Authentication:
-# We use OIDC (OpenID Connect) instead of storing AWS keys in GitHub Secrets.
-# OIDC = GitHub proves its identity to AWS, AWS issues temporary credentials.
-# Why: Static keys are a security risk. OIDC credentials are temporary (1 hour).
+# The build and deploy jobs run only when the AWS stack exists. The stack is
+# torn down between uses, so "is there anything to deploy to?" is a normal
+# question for this pipeline, answered by the check-aws job.
 #
-# SETUP REQUIRED:
-# 1. Create OIDC provider in AWS IAM for GitHub
-# 2. Create IAM role with ECR push + EC2 permissions
-# 3. Add these GitHub Secrets:
-#    - AWS_ROLE_ARN: arn:aws:iam::ACCOUNT_ID:role/github-actions-role
-#    - EC2_APP_HOST: private IP of app server  
-#    - EC2_SSH_KEY: private SSH key (keep .pem contents)
-#    - ECR_REGISTRY: ACCOUNT_ID.dkr.ecr.ap-south-1.amazonaws.com
+# AWS access uses OIDC, not stored keys. For each job GitHub signs a short-lived
+# token describing where the job runs; AWS checks it against the role's trust
+# policy and returns credentials that expire within the hour. There is no AWS
+# secret in this repository to leak or rotate (ADR-004). The role and its trust
+# policy are created by scripts/bootstrap-aws-account.sh.
+#
+# Repository secrets used (none is a credential):
+#   AWS_ROLE_ARN      which role to assume           set once, after bootstrap
+#   ECR_REGISTRY      <account>.dkr.ecr.<region>.amazonaws.com/observeops
+#   EC2_INSTANCE_ID   the app server; its presence means "the stack is up"
+#                     (the last two are written by infra-up.sh and removed by infra-down.sh)
 
 name: ObserveOps CI/CD
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     paths-ignore:
       - 'docs/**'
       - 'analytics/**'
@@ -38,24 +39,15 @@ on:
       - '.gitignore'
   workflow_dispatch:
 
-# Scope GITHUB_TOKEN to minimum required permissions.
-# Default is write-all which is a security risk — a compromised workflow could
-# push code, delete branches, or create releases.
-# This is the top-level ceiling every job inherits unless it sets its own
-# (narrower) `permissions:` block below — most jobs here don't need the full
-# grant (e.g. `test` never touches AWS or uploads SARIF), so each job now scopes
-# down to exactly what it actually does.
+# The ceiling for every job. A job that needs more (an OIDC token, permission to
+# upload scan results) asks for it in its own `permissions:` block, so no job
+# holds a permission it does not use.
 permissions:
-  contents: read        # checkout
-  id-token: write       # OIDC: exchange token for AWS credentials
-  security-events: write # Upload SARIF scan results to GitHub Security tab
+  contents: read
 
-# Two rapid pushes to the same branch used to be able to run overlapping
-# deploy-production jobs with no ordering guarantee — whichever SSM command
-# finished last would win, regardless of which commit was actually newer.
-# cancel-in-progress is deliberately false: cancelling an in-flight SSM deploy
-# mid-command could leave the app server half-updated, which is worse than a
-# few extra minutes of queueing.
+# One pipeline per branch at a time, and never cancel one that is running:
+# stopping an SSM deploy half way could leave the server with some containers on
+# the new version and some on the old.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -66,14 +58,12 @@ env:
 
 jobs:
 
-  # ─── Job 1: Test ────────────────────────────────────────────────────────────
-  # Runs on every push and PR. Pipeline stops here if tests fail.
+  # ─── Test ───────────────────────────────────────────────────────────────────
+  # Runs on every event. Nothing later runs if this fails.
   test:
     name: Run Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
@@ -92,7 +82,8 @@ jobs:
       - name: Install SecureShip dependencies
         run: pip install -r apps/secureship/requirements.txt
 
-      # RAGService deps include PyTorch — install CPU-only build (~350 MB, not ~2 GB GPU build)
+      # RAGService needs PyTorch. The CPU-only build is ~350 MB; the default one
+      # bundles GPU libraries and is ~2 GB.
       - name: Install RAGService dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -104,6 +95,8 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest httpx pytest-asyncio
 
+      # Each suite is a separate pytest run because each service has its own
+      # `tests` package; collected together they would shadow one another.
       - name: Run SecureShip tests
         run: pytest apps/secureship/tests/ -v
 
@@ -113,15 +106,16 @@ jobs:
       - name: Run RAGService tests
         run: pytest apps/ragservice/tests/ -v
 
-      # The autopilot's MTTR depends on parsing AlertManager timestamps. The module
-      # under test has no dependencies, so it needs nothing installed.
       - name: Run LLM Alert Autopilot tests
         run: pytest apps/llm-alert-autopilot/tests/ -v
 
-      # Alert and recording rules are code, so they get tests. promtool feeds
-      # synthetic series into the real rule files and asserts which alerts fire
-      # and when (monitoring/prometheus/tests/alerts_test.yml). This is what would
-      # have caught three error-rate alerts that divided every series by itself.
+      - name: Run Lambda handler tests
+        run: pytest apps/lambda/tests/ -v
+
+      # Alert rules are code, so they have tests. promtool feeds synthetic series
+      # into the real rule files and asserts which alerts fire and when
+      # (monitoring/prometheus/tests/alerts_test.yml). This is what would have
+      # caught five alerts that divided every series by itself (ADR-012).
       - name: Validate and unit-test Prometheus rules
         run: |
           docker run --rm -v "$PWD/monitoring/prometheus:/rules" --entrypoint promtool \
@@ -129,47 +123,63 @@ jobs:
           docker run --rm -v "$PWD/monitoring/prometheus:/rules" --entrypoint promtool \
             prom/prometheus:v3.15.0 test rules /rules/tests/alerts_test.yml
 
-      - name: Validate AlertManager config
+      # The routing tree is logic too: check that each kind of alert reaches the
+      # receivers it should, and that the deadman heartbeat reaches nothing else.
+      - name: Validate AlertManager config and routing
         run: |
-          docker run --rm -v "$PWD/monitoring/alertmanager:/am" --entrypoint amtool \
-            prom/alertmanager:v0.34.1 check-config /am/alertmanager.yml
+          amtool() {
+            docker run --rm -v "$PWD/monitoring/alertmanager:/am" --entrypoint amtool \
+              prom/alertmanager:v0.34.1 "$@"
+          }
+          amtool check-config /am/alertmanager.yml
+          route() { amtool config routes test --config.file=/am/alertmanager.yml "$@"; }
+          route --verify.receivers=llm-autopilot,slack-critical alertname=ServiceDown severity=critical job=secureship
+          route --verify.receivers=llm-autopilot,slack-warnings alertname=HighLatency severity=warning job=secureship
+          route --verify.receivers=watchdog-sink alertname=Watchdog severity=none
 
-      # There is deliberately no "RAG answer quality" step here. apps/ragservice/eval.py
-      # scores answers from a LIVE service, and CI has none: the step that used to
-      # run it skipped all five cases and printed PASS. What can be gated
-      # deterministically is retrieval and the grounding check, which the RAGService
-      # tests above cover (tests/test_retrieval.py). eval.py is run against a
-      # deployed stack instead; see the README.
+      - name: Validate the Alloy (log shipper) config
+        run: |
+          docker run --rm -v "$PWD/monitoring/alloy:/etc/alloy:ro" grafana/alloy:v1.20.1 \
+            fmt /etc/alloy/config.alloy > /dev/null
 
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+        env:
+          GROQ_API_KEY: placeholder-for-validation
 
-  # ─── Job 2: Security Scan ───────────────────────────────────────────────────
-  # Runs on every push AFTER tests pass.
-  # Three tools, three layers of security:
-  #   Trivy   = dependency vulnerabilities (CVEs in Python packages)
-  #   Bandit  = static code analysis (SQL injection, hardcoded passwords, etc.)
-  #   TruffleHog = git history scan for accidentally committed secrets
+      # There is deliberately no "RAG answer quality" step. apps/ragservice/eval.py
+      # scores answers from a LIVE service and CI has none: the step that used to
+      # run it skipped every case and printed PASS. What can be gated
+      # deterministically is retrieval and the grounding check, which the
+      # RAGService tests above cover (tests/test_retrieval.py).
+
+  # ─── Security scan ──────────────────────────────────────────────────────────
+  #   Trivy       known vulnerabilities in the dependencies this repo declares
+  #   Bandit      insecure patterns in the Python source (blocks on HIGH)
+  #   TruffleHog  credentials committed to git (blocks on a verified secret)
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     timeout-minutes: 10
     permissions:
       contents: read
-      security-events: write
+      security-events: write   # upload results to the repository's Security tab
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0    # Full history needed for TruffleHog secret scan
+          fetch-depth: 0    # TruffleHog reads history, not just the latest commit
 
-      # Trivy scans all files for known CVEs in Python packages, OS packages,
-      # and config files. Results appear in GitHub Security tab as SARIF.
-      # Pinned to a specific release, not @master — the same class of supply-chain
-      # risk ADR-008 documents for container images (a floating ref is *more*
-      # volatile than a mutable :latest image tag, and this one runs in a job that
-      # holds security-events: write).
+      # Scans the repository's files: requirements.txt, Dockerfiles, config. It
+      # does not scan the built images (ECR does that on push). It REPORTS to the
+      # Security tab and does not fail the build: a new CVE in a transitive
+      # dependency would otherwise block an unrelated fix. In a team this would
+      # block on CRITICAL with a reviewed ignore list.
+      # Pinned to a release tag, never @master: a moving ref in a job that can
+      # write security events is exactly the supply-chain risk ADR-008 describes.
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -185,8 +195,6 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      # Bandit is Python-specific SAST (Static Application Security Testing).
-      # It catches: shell injection, hardcoded passwords, use of insecure functions.
       - name: Set up Python for Bandit
         uses: actions/setup-python@v7
         with:
@@ -215,29 +223,23 @@ jobs:
           fi
           echo "✓ Bandit: no HIGH severity issues"
 
-      # TruffleHog scans git commits for secrets (API keys, passwords, tokens).
-      # It compares HEAD to the default branch — catches secrets in new commits.
+      # No base/head given: on a push the action scans the pushed commits, on a
+      # manual run it scans the whole history. --only-verified reports a secret
+      # only if it still works against the provider, so this never fails on a
+      # look-alike string.
       - name: TruffleHog secret scan
-        uses: trufflesecurity/trufflehog@v3.88.21
+        uses: trufflesecurity/trufflehog@v3.99.0
         with:
           path: ./
-          base: ${{ github.event.before }}
-          head: ${{ github.sha }}
           extra_args: --only-verified
 
-  # ─── Job 3: Terraform Lint ──────────────────────────────────────────────────
-  # Runs in parallel with security-scan.
-  # terraform fmt -check: fails if any .tf file is not formatted (prevents drift)
-  # tfsec: static analysis for Terraform misconfigurations (open S3 buckets,
-  #         missing encryption, overly-permissive IAM, etc.)
+  # ─── Terraform checks ───────────────────────────────────────────────────────
   terraform-lint:
     name: Terraform Lint
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     timeout-minutes: 10
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
@@ -246,7 +248,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.12.2"
 
       - name: terraform fmt check
         working-directory: terraform
@@ -259,30 +261,33 @@ jobs:
           fi
           echo "✓ Terraform formatting is correct"
 
-      - name: tfsec static analysis
-        uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: terraform
-          soft_fail: true
-          # soft_fail: true — findings are visible in CI output but don't block deploy.
-          # Accepted deviations are documented with justifications in .tfsec/config.yml.
-          # In a production environment soft_fail would be false with all deviations
-          # reviewed and approved by the security team.
-          # tfsec checks for: unencrypted S3 buckets, open security groups,
-          # missing CloudTrail, public ECR repos, over-permissive IAM policies.
+      # Syntax and internal consistency, without touching AWS or the state.
+      - name: terraform validate
+        working-directory: terraform
+        run: |
+          terraform init -backend=false -input=false > /dev/null
+          terraform validate
 
-  # ─── Job 3b: Check AWS secrets ─────────────────────────────────────────────
-  # Detects whether ECR_REGISTRY and AWS_ROLE_ARN are configured.
-  # build-push and deploy skip gracefully when AWS is not yet set up.
+      # Misconfiguration scan (open security groups, unencrypted storage, wide IAM).
+      # Trivy's scanner replaced tfsec, which is no longer developed. Reports only:
+      # exit-code 0. The findings it prints that are accepted here, and why, are in
+      # the README under "Known limits".
+      - name: Trivy IaC scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+
+  # ─── Is there a stack to deploy to? ─────────────────────────────────────────
   check-aws:
     name: Check AWS Configuration
     runs-on: ubuntu-latest
     needs: [test, security-scan, terraform-lint]
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     timeout-minutes: 5
-    # No checkout, no AWS auth, no SARIF upload — this job only reads secrets
-    # context values, so it needs none of the top-level GITHUB_TOKEN grant at all.
-    permissions: {}
+    permissions: {}     # reads three secrets' presence; needs nothing else
     outputs:
       configured: ${{ steps.check.outputs.configured }}
     steps:
@@ -294,23 +299,22 @@ jobs:
           EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
         run: |
           if [ -n "$ECR_REGISTRY" ] && [ -n "$AWS_ROLE_ARN" ] && [ -n "$EC2_INSTANCE_ID" ]; then
-            echo "configured=true" >> $GITHUB_OUTPUT
-            echo "✓ AWS secrets configured — proceeding with build & deploy"
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "✓ Stack is up — building and deploying"
           else
-            echo "configured=false" >> $GITHUB_OUTPUT
-            echo "⚠ AWS secrets not set or infra is down — skipping build & deploy"
-            echo "  Run scripts/infra-up.sh to bring infra up and set secrets"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "⚠ No stack (EC2_INSTANCE_ID is not set) — skipping build and deploy"
+            echo "  scripts/infra-up.sh brings it up and sets the secrets"
           fi
 
-  # ─── Job 4: Generate Image Tag ─────────────────────────────────────────────
-  # Compute the tag once here so all parallel build jobs use the same value.
+  # ─── Image tag ──────────────────────────────────────────────────────────────
+  # Computed once so all four builds and the deploy use the same value.
   generate-tag:
     name: Generate Image Tag
     runs-on: ubuntu-latest
     needs: [check-aws]
-    if: github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
+    if: needs.check-aws.outputs.configured == 'true'
     timeout-minutes: 5
-    # Pure string manipulation on github.sha — no checkout, no AWS, no SARIF.
     permissions: {}
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
@@ -318,23 +322,20 @@ jobs:
       - name: Generate image tag
         id: meta
         run: |
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          echo "tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           echo "Image tag: ${SHORT_SHA}"
 
-  # ─── Job 5: Build and Push (parallel matrix) ────────────────────────────────
-  # All four services build simultaneously — each gets its own runner.
-  # Previously sequential (secureship → statusservice → ragservice → autopilot),
-  # this cuts build time roughly 4×.
+  # ─── Build and push (four images in parallel) ───────────────────────────────
   build-push:
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
     needs: [generate-tag, check-aws]
-    if: github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
+    if: needs.check-aws.outputs.configured == 'true'
     timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write
+      id-token: write      # request the OIDC token that AWS exchanges for credentials
     strategy:
       matrix:
         include:
@@ -360,177 +361,118 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Three tags are pushed. The commit SHA is the one that gets deployed and
+      # rolled back to. `main` and `latest` move on every build and are there for
+      # people looking at the registry; nothing deploys from them.
       - name: Build and push ${{ matrix.service }}
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.generate-tag.outputs.tag }}
           SERVICE: ${{ matrix.service }}
+        # Every build starts from an empty cache. An earlier version passed
+        # --cache-from <image>:latest, which looked like caching and did nothing:
+        # BuildKit only reuses layers from an image that was built with cache
+        # metadata embedded, and these never were. Real caching here means buildx
+        # with a registry or GitHub cache backend; until that is measured to be
+        # worth it, an honest slow build beats a fake fast one.
         run: |
-          docker pull "$REGISTRY/$SERVICE:latest" 2>/dev/null && \
-            CACHE_FLAG="--cache-from $REGISTRY/$SERVICE:latest" || CACHE_FLAG=""
           docker build \
-            $CACHE_FLAG \
             --tag "$REGISTRY/$SERVICE:$TAG" \
             --tag "$REGISTRY/$SERVICE:${{ github.ref_name }}" \
+            --tag "$REGISTRY/$SERVICE:latest" \
             ${{ matrix.context }}/
           docker push "$REGISTRY/$SERVICE:$TAG"
           docker push "$REGISTRY/$SERVICE:${{ github.ref_name }}"
-          if [ "${{ github.ref_name }}" == "main" ]; then
-            docker tag "$REGISTRY/$SERVICE:$TAG" "$REGISTRY/$SERVICE:latest"
-            docker push "$REGISTRY/$SERVICE:latest"
-          fi
+          docker push "$REGISTRY/$SERVICE:latest"
 
-  update-k8s-manifests:
-    name: Update K8s Image Tags
-    runs-on: ubuntu-latest
-    needs: [generate-tag, build-push, check-aws]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update image tags in K8s manifests
-        env:
-          REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          TAG: ${{ needs.generate-tag.outputs.tag }}
-        run: |
-          # Regex matches both the placeholder (first deploy) and any prior real tag
-          # (subsequent deploys). Pattern: image: <anything>/secureship:<anything>
-          # This makes the step idempotent regardless of what tag is currently in git.
-          sed -i -E "s|image: .*/secureship:[^ ]+|image: $REGISTRY/secureship:$TAG|" \
-            kubernetes/apps/secureship/deployment.yaml
-          sed -i -E "s|image: .*/statusservice:[^ ]+|image: $REGISTRY/statusservice:$TAG|" \
-            kubernetes/apps/statusservice/deployment.yaml
-          sed -i -E "s|image: .*/ragservice:[^ ]+|image: $REGISTRY/ragservice:$TAG|" \
-            kubernetes/apps/ragservice/deployment.yaml
-
-      - name: Commit and push manifest updates
-        env:
-          TAG: ${{ needs.generate-tag.outputs.tag }}
-        run: |
-          git config user.email "github-actions@github.com"
-          git config user.name "GitHub Actions"
-          git add kubernetes/apps/
-          git diff --staged --quiet || git commit -m "chore: update K8s image tags to $TAG"
-          git pull --no-rebase -X ours origin main
-          git push
-
+  # ─── Deploy ─────────────────────────────────────────────────────────────────
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
-    needs: [generate-tag, build-push, check-aws, update-k8s-manifests]
-
-    # Only deploy on main branch pushes when AWS is configured
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.check-aws.outputs.configured == 'true'
-    # Deploy's own SSM poll loop already self-bounds at 8 minutes; this timeout
-    # is a backstop for the AWS CLI calls that precede it, not the loop itself.
-    timeout-minutes: 15
+    needs: [generate-tag, build-push, check-aws]
+    if: needs.check-aws.outputs.configured == 'true'
+    # The SSM poll below gives up after 12 minutes; this is the backstop.
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
 
-    # A GitHub "environment" groups deployments and can require approval before
-    # this job runs (Settings → Environments → production → Required reviewers).
-    # No protection rule is configured on it for this single-maintainer project,
-    # so pushes to main deploy without a manual gate.
+    # Declaring the environment changes this job's OIDC subject to
+    # "repo:<repo>:environment:production", which the role's trust policy names.
+    # The environment itself only accepts deployments from main (set by the
+    # bootstrap script). It has no required reviewers: one maintainer.
     environment:
       name: production
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Deploy via AWS SSM — no SSH port or public IP needed.
-      # Runs deploy.sh directly as ubuntu via a single SSM command (no temp file).
+      # The app server has no public address and no SSH. The deploy is one SSM
+      # command: pull this repository's main branch (compose file, configs,
+      # deploy.sh) and run deploy.sh with the image tag built above.
       - name: Deploy to EC2 via SSM
         env:
           REGISTRY: ${{ secrets.ECR_REGISTRY }}
           TAG: ${{ needs.generate-tag.outputs.tag }}
           INSTANCE_ID_FALLBACK: ${{ secrets.EC2_INSTANCE_ID }}
-          OBS_IP_FALLBACK: ${{ secrets.OBS_SERVER_IP }}
         run: |
-          # Look up app server instance ID by tag — auto-discovers new instance after
-          # terraform destroy+apply so EC2_INSTANCE_ID secret never needs manual updating.
+          # Find the app server by tag, so a rebuilt instance is picked up without
+          # anyone editing a secret.
           INSTANCE_ID=$(aws ec2 describe-instances \
-            --region ${{ env.AWS_REGION }} \
             --filters "Name=tag:Name,Values=observeops-app-server" \
                       "Name=instance-state-name,Values=running" \
             --query "Reservations[0].Instances[0].InstanceId" \
             --output text 2>/dev/null || echo "")
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "⚠ Tag lookup failed — using EC2_INSTANCE_ID secret as fallback"
+            echo "⚠ Tag lookup found nothing — using the EC2_INSTANCE_ID secret"
             INSTANCE_ID="$INSTANCE_ID_FALLBACK"
-          fi
-
-          # Read obs server IP from SSM using CI runner's OIDC credentials (full access).
-          # Falls back to the GitHub secret if SSM is unavailable (e.g. infra not yet ready).
-          OBS_SERVER_IP=$(aws ssm get-parameter \
-            --name "/observeops/production/obs_server_ip" \
-            --region ${{ env.AWS_REGION }} \
-            --query "Parameter.Value" \
-            --output text 2>/dev/null || echo "")
-          if [ -z "$OBS_SERVER_IP" ]; then
-            echo "⚠ SSM read failed — using OBS_SERVER_IP secret as fallback"
-            OBS_SERVER_IP="$OBS_IP_FALLBACK"
           fi
           echo "Deploying $TAG to $INSTANCE_ID"
 
-          # Single SSM command — sets env vars inline and runs deploy.sh as ubuntu.
-          # Avoids the heredoc approach which breaks because SSM \n stays literal.
-          # Files reset before git pull: deploy.sh injects real values into these on
-          # every run (sed/cat), leaving them dirty; pull would abort without the reset.
+          # `git pull --ff-only` refuses to merge: if the checkout on the server has
+          # been edited by hand the deploy stops instead of deploying a mixture.
+          REMOTE="cd /opt/observeops && git pull --ff-only && ECR_REGISTRY=$REGISTRY IMAGE_TAG=$TAG APP_DIR=/opt/observeops AWS_REGION=${{ env.AWS_REGION }} DEPLOY_USER=github-actions bash scripts/deploy.sh"
           COMMAND_ID=$(aws ssm send-command \
-            --region ${{ env.AWS_REGION }} \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"runuser -l ubuntu -c 'git config --global --add safe.directory /opt/observeops; cd /opt/observeops && git checkout -- monitoring/alertmanager/alertmanager.yml nginx/nginx.conf monitoring/otel/otel-collector.yaml 2>/dev/null || true && git pull; export ECR_REGISTRY=$REGISTRY; export IMAGE_TAG=$TAG; export APP_DIR=/opt/observeops; export AWS_REGION=${{ env.AWS_REGION }}; export OBS_SERVER_IP=$OBS_SERVER_IP; bash /opt/observeops/scripts/deploy.sh'\"],executionTimeout=[\"600\"]" \
+            --comment "deploy $TAG" \
+            --parameters "commands=[\"runuser -l ubuntu -c 'git config --global --add safe.directory /opt/observeops; $REMOTE'\"],executionTimeout=[\"780\"]" \
             --query "Command.CommandId" --output text)
           echo "SSM command ID: $COMMAND_ID"
 
-          # Poll until done (max 8 min)
-          for i in $(seq 1 48); do
+          show_output() {
+            echo "──────── deploy.sh output (last lines) ────────"
+            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --query "StandardOutputContent" --output text 2>/dev/null | tail -n 60 || true
+            echo "──────── stderr ────────"
+            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --query "StandardErrorContent" --output text 2>/dev/null | tail -n 30 || true
+          }
+
+          # Poll until done (max 12 min). The first deploy to a new server pulls
+          # four images, one of them over a gigabyte, before anything starts.
+          for i in $(seq 1 72); do
             sleep 10
             STATUS=$(aws ssm get-command-invocation \
-              --region ${{ env.AWS_REGION }} \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
               --query "Status" --output text 2>/dev/null || echo "Pending")
             echo "[$i] Status: $STATUS"
             if [ "$STATUS" = "Success" ]; then
+              show_output
               echo "✅ Deploy successful"
               exit 0
             fi
             if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
-              echo "❌ Deploy failed with status: $STATUS"
-              aws ssm get-command-invocation \
-                --region ${{ env.AWS_REGION }} \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$INSTANCE_ID" \
-                --query "StandardErrorContent" --output text 2>/dev/null || true
+              show_output
+              echo "❌ Deploy failed with status: $STATUS (deploy.sh rolls back on its own when it can)"
               exit 1
             fi
           done
-          echo "❌ Deploy timed out after 8 minutes"
+          show_output
+          echo "❌ Deploy did not finish within 12 minutes"
           exit 1
-
-      # Notify success
-      - name: Deployment success notification
-        if: success()
-        run: echo "✅ Deployment successful - ${{ github.sha }}"
-
-      # If deployment failed, the deploy script handles rollback automatically.
-      # This step just notifies.
-      - name: Deployment failure notification
-        if: failure()
-        run: echo "❌ Deployment failed - check logs above"
