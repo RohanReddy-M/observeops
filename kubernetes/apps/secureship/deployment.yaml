@@ -55,12 +55,18 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+          # Readiness asks whether this pod can serve requests right now, so it checks
+          # DynamoDB (/ready). A pod that cannot reach the table is taken out of the
+          # Service's endpoints instead of receiving traffic and answering 503.
+          # Liveness (below) stays on /health, which touches nothing: restarting a pod
+          # because a dependency is down would only turn an outage into a restart loop.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8001
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
