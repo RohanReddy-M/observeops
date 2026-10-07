@@ -393,11 +393,24 @@ SMOKE_TESTS_PASSED=true
 check_endpoint() {
     local url=$1
     local name=$2
-    if curl -sf "$url" > /dev/null 2>&1; then
-        log_info "✓ $name is responding"
+    local waited=0
+    # A container that was just recreated needs a few seconds before it answers. Poll
+    # rather than make one request after a fixed sleep: that race failed a real deploy
+    # on 7 Oct 2026 (the alert autopilot was still starting) and rolled back a healthy
+    # release. Give up after 60 s, and say so.
+    until curl -sf "$url" > /dev/null 2>&1; do
+        if [ "$waited" -ge 60 ]; then
+            log_error "✗ $name is NOT responding at $url after ${waited}s"
+            SMOKE_TESTS_PASSED=false
+            return
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if [ "$waited" -gt 0 ]; then
+        log_info "✓ $name is responding (after ${waited}s)"
     else
-        log_error "✗ $name is NOT responding at $url"
-        SMOKE_TESTS_PASSED=false
+        log_info "✓ $name is responding"
     fi
 }
 
