@@ -16,9 +16,10 @@ global:
   resolve_timeout: 5m
 
 # ─── Routing Tree ─────────────────────────────────────────────────────────────
-# Every alert enters at the root route and gets matched against routes.
-# First match wins unless `continue: true` is set. Unmatched alerts go to the
-# default receiver.
+# Every alert enters at the root route and is compared with the sub-routes in
+# order. The first one whose matchers fit takes it and the search stops, unless
+# that route says `continue: true`, in which case later routes are tried as well.
+# An alert that fits no sub-route is handled by the root route's own receiver.
 route:
   # Default: the null receiver, for alerts that match no severity route.
   receiver: 'null'
@@ -45,8 +46,8 @@ route:
     # It is re-sent every 5 minutes to an external heartbeat monitor; if those
     # pings stop, the external service raises the alarm that this stack cannot
     # raise about itself.
-    - match:
-        alertname: Watchdog
+    - matchers:
+        - alertname = "Watchdog"
       receiver: 'watchdog-sink'
       group_wait: 0s
       repeat_interval: 5m
@@ -57,14 +58,14 @@ route:
       continue: true
 
     # Critical alerts go to Slack critical channel
-    - match:
-        severity: critical
+    - matchers:
+        - severity = "critical"
       receiver: 'slack-critical'
       repeat_interval: 1h
 
     # Warning alerts go to Slack warnings channel
-    - match:
-        severity: warning
+    - matchers:
+        - severity = "warning"
       receiver: 'slack-warnings'
 
 # ─── Receivers ────────────────────────────────────────────────────────────────
@@ -109,16 +110,32 @@ receivers:
     slack_configs:
       - api_url_file: '/etc/alertmanager/secrets/slack_webhook_critical'
         channel: '#alerts-critical'
-        title: 'CRITICAL — {{ .GroupLabels.alertname }}'
-        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+        # The title carries the state. With send_resolved on, a title that only says
+        # "CRITICAL" makes the all-clear look exactly like a second alarm.
+        title: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] CRITICAL {{ .GroupLabels.alertname }}{{ if .GroupLabels.job }} ({{ .GroupLabels.job }}){{ end }}'
+        # What is wrong, what to check first, and the runbook: enough to start
+        # working from the notification without opening Prometheus.
+        text: |-
+          {{ range .Alerts }}*{{ .Annotations.summary }}*
+          {{ .Annotations.description }}{{ if .Annotations.runbook_url }}
+          Runbook: {{ .Annotations.runbook_url }}{{ end }}
+          {{ end }}
         send_resolved: true
 
   - name: 'slack-warnings'
     slack_configs:
       - api_url_file: '/etc/alertmanager/secrets/slack_webhook_warnings'
         channel: '#alerts-warnings'
-        title: 'WARNING — {{ .GroupLabels.alertname }}'
-        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+        # The title carries the state. With send_resolved on, a title that only says
+        # "CRITICAL" makes the all-clear look exactly like a second alarm.
+        title: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] WARNING {{ .GroupLabels.alertname }}{{ if .GroupLabels.job }} ({{ .GroupLabels.job }}){{ end }}'
+        # What is wrong, what to check first, and the runbook: enough to start
+        # working from the notification without opening Prometheus.
+        text: |-
+          {{ range .Alerts }}*{{ .Annotations.summary }}*
+          {{ .Annotations.description }}{{ if .Annotations.runbook_url }}
+          Runbook: {{ .Annotations.runbook_url }}{{ end }}
+          {{ end }}
         send_resolved: true
 
 # ─── Inhibition Rules ─────────────────────────────────────────────────────────
@@ -126,10 +143,10 @@ receivers:
 # Example: If ServiceDown is firing, don't also send HighErrorRate
 # (the service being down IS the cause of the errors - don't double-alert)
 inhibit_rules:
-  - source_match:
-      severity: 'critical'
-    target_match:
-      severity: 'warning'
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
     # If a critical alert fires for job X, suppress all warnings for job X.
     # 'alertname' must NOT be in equal — source (ServiceDown) and target
     # (HighErrorRate) have different names, so equal: ['alertname','job']

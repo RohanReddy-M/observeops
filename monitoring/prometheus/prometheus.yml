@@ -132,6 +132,25 @@ scrape_configs:
         labels:
           service: 'loki'
 
+  # ─── Alloy (log shipper) ────────────────────────────────────────────────────
+  # One on each host, like node-exporter. Scraping it means a shipper that has
+  # died is caught by ServiceDown. It does NOT catch a shipper that is running but
+  # delivering nothing; that needs an alert on the flow of logs, not on the
+  # process. See "Known gaps" in the README.
+  - job_name: 'alloy'
+    static_configs:
+      - targets: ['alloy:9080']
+        labels:
+          service: 'alloy'
+          host: 'obs-server'
+
+  - job_name: 'alloy-app'
+    static_configs:
+      - targets: ['app-server:9080']
+        labels:
+          service: 'alloy'
+          host: 'app-server'
+
   # ─── AlertManager ───────────────────────────────────────────────────────────
   - job_name: 'alertmanager'
     static_configs:

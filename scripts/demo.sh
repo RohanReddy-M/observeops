@@ -1,198 +1,149 @@
-#!/bin/bash
-# ─── ObserveOps Interview Demo ────────────────────────────────────────────────
-# Run this during a screen share to walk through the project capabilities.
-# Shows: API, AI assistant, alerting, observability, chaos engineering.
+#!/usr/bin/env bash
+# ─── ObserveOps: a five-minute walk through the running stack ─────────────────
+# For a screen share. Every line it prints comes from a request it has just made
+# to the stack on this machine; nothing is a canned claim. If a step fails it
+# says so and carries on, so you can talk about the failure instead of hiding it.
 #
-# Usage: bash scripts/demo.sh
-# Pre-requisite: make dev-up must be running
+#   docker compose up -d        # first, and give it a minute
+#   bash scripts/demo.sh
+#
+# Auth is OFF in the local stack (no API key configured) so the calls below need
+# no key. On AWS the same API refuses any request without the X-API-Key header;
+# deploy.sh checks that on every deploy.
+set -u
 
-set -euo pipefail
+BOLD='\033[1m'; BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+section() { echo ""; echo -e "${BOLD}${BLUE}== $* ==${NC}"; }
+say()     { echo -e "   $*"; }
+good()    { echo -e "   ${GREEN}ok${NC}   $*"; }
+bad()     { echo -e "   ${YELLOW}!!${NC}   $*"; }
 
-BLUE='\033[0;34m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+# python3 on Windows is often a Store stub that prints nothing; prefer `python`.
+if python -c "" >/dev/null 2>&1; then PY=python; else PY=python3; fi
+code() { curl -s -o /dev/null -m 8 -w '%{http_code}' "$@" 2>/dev/null; }
+PROM="http://localhost:9090/prometheus"
 
-section() { echo ""; echo -e "${BOLD}${BLUE}══ $* ══${NC}"; echo ""; }
-step()    { echo -e "${CYAN}→${NC}  $*"; }
-result()  { echo -e "${GREEN}✓${NC}  $*"; }
-note()    { echo -e "${YELLOW}ℹ${NC}  $*"; }
-
-echo ""
-echo -e "${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║           ObserveOps — Live Demo                     ║${NC}"
-echo -e "${BOLD}║   Production-grade DevOps + AIOps portfolio project  ║${NC}"
-echo -e "${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
-echo ""
-note "Stack: FastAPI + LangChain + FAISS + Groq + Prometheus + Grafana + Loki + Tempo"
-note "Deployed via: GitHub Actions (OIDC) → ECR → EC2 → Docker Compose"
-
-# ─── Step 1: Verify stack is healthy ────────────────────────────────────────
-section "1. System Health"
-
-step "Checking all services..."
-PASS=true
-for svc_port in "SecureShip:8001" "StatusService:8002" "RAGService:8003" "LLM-Autopilot:8080" "Prometheus:9090" "Grafana:3000" "AlertManager:9093"; do
-    svc="${svc_port%%:*}"
-    port="${svc_port##*:}"
-    path="/health"
-    [ "$port" = "9090" ] && path="/-/healthy"
-    [ "$port" = "3000" ] && path="/api/health"
-    [ "$port" = "9093" ] && path="/-/healthy"
-    code=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 3 "http://localhost:${port}${path}" 2>/dev/null || echo "000")
-    if [ "$code" = "200" ]; then
-        result "$svc: UP"
-    else
-        echo -e "  ${YELLOW}⚠${NC}  $svc: DOWN (HTTP $code) — run 'make dev-up' first"
-        PASS=false
-    fi
+# ── 1. Is everything up, and how do we know? ──────────────────────────────────
+section "1. What is running"
+ALL_UP=true
+for target in "nginx (front door)|http://localhost/nginx-health" \
+              "SecureShip API|http://localhost:8001/health" \
+              "StatusService|http://localhost:8002/health" \
+              "RAGService|http://localhost:8003/health" \
+              "Alert autopilot|http://localhost:8080/health" \
+              "Prometheus|${PROM}/-/healthy" \
+              "AlertManager|http://localhost:9093/-/healthy" \
+              "Grafana|http://localhost:3000/api/health" \
+              "Loki|http://localhost:3100/ready"; do
+    name="${target%%|*}"; url="${target##*|}"
+    c=$(code "$url")
+    if [ "$c" = "200" ]; then good "$name"; else bad "$name answered ${c:-nothing} at $url"; ALL_UP=false; fi
 done
+if [ "$ALL_UP" = false ]; then
+    say ""
+    say "Something is not up. Start the stack and wait a minute:  docker compose up -d"
+    say "(Loki reports 'not ready' for about 15 s after it starts; that one is normal.)"
+fi
 
-# RAGService knowledge base check
-docs=$(curl -sf --max-time 3 http://localhost:8003/health 2>/dev/null \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('vector_store_docs',0))" 2>/dev/null || echo "?")
-result "RAGService FAISS index: ${docs} documents loaded"
+say ""
+say "That was me asking each service. This is Prometheus asking, every 15 s:"
+curl -s -m 8 "${PROM}/api/v1/targets?state=active" | $PY -c "
+import sys, json
+t = json.load(sys.stdin)['data']['activeTargets']
+up = [x for x in t if x['health'] == 'up']
+print('   %d of %d scrape targets up' % (len(up), len(t)))
+for x in t:
+    if x['health'] != 'up':
+        print('   DOWN: %s  %s' % (x['labels']['job'], x.get('lastError', '')[:70]))
+" 2>/dev/null || bad "could not read Prometheus targets"
 
-echo ""
-[ "$PASS" = false ] && echo -e "${YELLOW}Some services are down. Run 'make dev-up' and wait 20s, then retry.${NC}" && exit 1
+# ── 2. The API ────────────────────────────────────────────────────────────────
+section "2. SecureShip API (through nginx, the way a user reaches it)"
+say "GET /api/v1/ships?limit=2"
+curl -s -m 8 "http://localhost/api/v1/ships?limit=2" | $PY -c "
+import sys, json
+d = json.load(sys.stdin)
+print('   total=%s  returned=%s  has_more=%s' % (d.get('total'), len(d.get('ships', [])), d.get('has_more')))
+for s in d.get('ships', []): print('   -', s.get('ship_id'), '|', s.get('name'), '|', s.get('status'))
+" 2>/dev/null || bad "no JSON came back"
 
-# ─── Step 2: SecureShip API ──────────────────────────────────────────────────
-section "2. SecureShip API — Rate Limited, Paginated, JWT/API-Key Auth"
+say ""
+say "Input is validated before anything is stored. An invalid status:"
+c=$(code -X POST "http://localhost/api/v1/ships" -H "Content-Type: application/json" \
+        -d '{"ship_id":"demo-1","name":"SS Demo","status":"sunk","cargo":"none"}')
+[ "$c" = "422" ] && good "rejected with HTTP 422" || bad "expected 422, got $c"
 
-step "Listing ships (unauthenticated → should return 401)..."
-code=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8001/api/v1/ships 2>/dev/null || echo "000")
-result "Unauthenticated request returned HTTP $code (401 = auth working)"
+say ""
+say "Every request is counted under its ROUTE, not its URL, so /ships/ship-001 and"
+say "/ships/ship-002 are one time series, not two (unbounded labels are how a"
+say "metrics store falls over):"
+curl -s -m 8 "http://localhost:8001/api/v1/ships/ship-001" >/dev/null
+curl -s -m 8 "http://localhost:8001/metrics" | grep '^http_requests_total' | grep 'ship_id' | head -2 | sed 's/^/   /'
 
-step "Listing ships with pagination (limit=2, offset=0)..."
-curl -sf "http://localhost:8001/api/v1/ships?limit=2&offset=0" \
-    -H "X-API-Key: ${API_KEY:-}" 2>/dev/null \
-    | python3 -m json.tool 2>/dev/null | head -20 || note "(Set API_KEY env var to test auth — in local mode, no key needed)"
+# ── 3. The RAG assistant ──────────────────────────────────────────────────────
+section "3. RAGService: answers from the runbooks, or says it cannot"
+curl -s -m 8 "http://localhost:8003/health" | $PY -c "
+import sys, json
+d = json.load(sys.stdin)
+print('   knowledge base: %s chunks, built from: %s' % (d.get('vector_store_docs'), d.get('knowledge_base_source')))
+" 2>/dev/null || bad "RAGService health did not answer"
 
-step "Creating a ship..."
-curl -sf -X POST http://localhost:8001/api/v1/ships \
-    -H "Content-Type: application/json" \
-    -H "X-API-Key: ${API_KEY:-}" \
-    -d '{"ship_id":"demo-001","name":"SS Demo","status":"active","cargo":"test payload"}' \
-    2>/dev/null | python3 -m json.tool 2>/dev/null || true
+llm_calls() { curl -s -m 8 "http://localhost:8003/metrics" | awk '/^llm_requests_total/ {s+=$NF} END {print s+0}'; }
+BEFORE=$(llm_calls)
+say ""
+say "Q: SecureShip is showing a high error rate. What should I check first?"
+curl -s -m 60 -X POST "http://localhost/ai/query" -H "Content-Type: application/json" \
+     -d '{"question":"SecureShip is showing a high error rate. What should I check first?"}' | $PY -c "
+import sys, json, textwrap
+d = json.load(sys.stdin)
+src = sorted({s.get('metadata', {}).get('source', '?') for s in d.get('sources', [])})
+print('   grounded: %s   retrieved from: %s' % (d.get('is_relevant'), ', '.join(src)))
+for line in textwrap.wrap((d.get('answer') or '').replace(chr(10), ' ')[:420], 76): print('   | ' + line)
+" 2>/dev/null || bad "no answer (is GROQ_API_KEY set in .env?)"
+MIDDLE=$(llm_calls)
 
-result "Rate limiting: 100 req/min per API key (429 after limit)"
-result "Input validation: ship_id pattern, status enum, all fields validated"
-result "Pagination: limit/offset/status filter — no unbounded scans"
+say ""
+say "Q: What is the capital of France?   (nothing in the runbooks is about this)"
+curl -s -m 60 -X POST "http://localhost/ai/query" -H "Content-Type: application/json" \
+     -d '{"question":"What is the capital of France?"}' | $PY -c "
+import sys, json
+d = json.load(sys.stdin)
+print('   grounded: %s' % d.get('is_relevant'))
+print('   | ' + (d.get('answer') or '')[:110])
+" 2>/dev/null || bad "no answer"
+AFTER=$(llm_calls)
+say ""
+say "LLM calls made: first question $((MIDDLE - BEFORE)), second question $((AFTER - MIDDLE))."
+say "The second is 0 by design: retrieval found nothing close enough, so the model"
+say "was never asked. It cannot invent an answer it was not given the chance to write."
 
-# ─── Step 3: AI Incident Assistant ──────────────────────────────────────────
-section "3. RAGService — AI Incident Assistant (LangChain + LangGraph + Groq)"
+# ── 4. Alerting ───────────────────────────────────────────────────────────────
+section "4. Alerting"
+curl -s -m 8 "${PROM}/api/v1/rules" | $PY -c "
+import sys, json
+g = json.load(sys.stdin)['data']['groups']
+alerts = [r for x in g for r in x['rules'] if r['type'] == 'alerting']
+firing = [r['name'] for r in alerts if r['state'] == 'firing' and r['name'] != 'Watchdog']
+rec = sum(1 for x in g for r in x['rules'] if r['type'] == 'recording')
+print('   %d alert rules and %d recording rules loaded' % (len(alerts), rec))
+print('   firing right now: %s' % (', '.join(firing) if firing else 'none (Watchdog always fires: it is the heartbeat)'))
+" 2>/dev/null || bad "could not read the rules"
+say ""
+say "The rules have unit tests (synthetic series in, expected alerts out):"
+say "   docker run --rm -v \"\$PWD/monitoring/prometheus:/rules\" --entrypoint promtool \\"
+say "       prom/prometheus:v3.15.0 test rules /rules/tests/alerts_test.yml"
+say ""
+say "To watch detection happen, with each stage timed (about 2 minutes):"
+say "   bash scripts/chaos.sh kill"
+say "To practise diagnosing a failure you were not told about:"
+say "   python scripts/gameday.py start"
 
-step "Asking the AI about a high error rate alert..."
-RESPONSE=$(curl -sf -X POST http://localhost:8003/query \
-    -H "Content-Type: application/json" \
-    -d '{"question": "SecureShip is showing a high error rate. What should I check first?"}' \
-    2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('answer',''))" 2>/dev/null || echo "(query failed)")
-echo ""
-echo -e "  ${CYAN}AI Response:${NC}"
-echo "$RESPONSE" | fold -s -w 80 | sed 's/^/  /'
-echo ""
-result "Grounding check: LLM only answers from ingested runbooks (no hallucination)"
-result "Source documents: response includes which runbooks were used"
-
-step "Testing graceful degradation (question with no runbook context)..."
-NO_CTX=$(curl -sf -X POST http://localhost:8003/query \
-    -H "Content-Type: application/json" \
-    -d '{"question": "What is the capital of France?"}' \
-    2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('answer','')[:80])" 2>/dev/null || echo "")
-result "Off-topic question: '$NO_CTX...'"
-result "Service does NOT hallucinate — returns 'I don't have enough context'"
-
-# ─── Step 4: Observability ───────────────────────────────────────────────────
-section "4. Observability — Metrics + Logs + Traces (full triad)"
-
-step "Prometheus metrics from SecureShip..."
-curl -sf http://localhost:8001/metrics 2>/dev/null \
-    | grep -E "^http_requests_total|^http_request_duration" | head -5
-echo ""
-result "Metrics: request count, p99 latency, error rate — all tracked"
-
-step "Grafana dashboards available at http://localhost:3000 (admin/observeops123)"
-note "  → Services Overview: http://localhost:3000/d/observeops-services"
-note "  → SLO + Error Budget: http://localhost:3000/d/observeops-slo"
-note "  → DORA Metrics:       http://localhost:3000/d/observeops-dora"
-note "  → LLM Metrics:        http://localhost:3000/d/observeops-llm"
-
-step "SLO definitions:"
-note "  SecureShip availability: 99.5% (error budget: 216 min/month)"
-note "  SecureShip p99 latency:  <500ms"
-note "  RAGService success rate: 95%"
-note "  RAGService grounded:     >50% (model quality SLO)"
-
-step "OTel distributed traces:"
-note "  Traces flow: app → otel-collector → Tempo → Grafana Explore"
-note "  Every SecureShip request has a trace ID for correlation with logs"
-
-# ─── Step 5: LLM Alert Autopilot ────────────────────────────────────────────
-section "5. LLM Alert Autopilot — AI Diagnoses Alerts Automatically"
-
-step "Recent deploy history (used to correlate alerts with deployments)..."
-curl -sf http://localhost:8080/deploy-history 2>/dev/null \
-    | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-if d['count']:
-    for dep in d['deploys'][:3]:
-        print(f\"  commit={dep['commit'][:12]} deployer={dep['deployer']} status={dep['status']}\")
-else:
-    print('  (no deploys recorded yet — deploy.sh registers them automatically)')
-" 2>/dev/null || true
-
-echo ""
-note "When an alert fires:"
-note "  1. AlertManager sends webhook to autopilot"
-note "  2. Autopilot queries Loki for error logs from the failing service"
-note "  3. Adds recent deploy context: 'commit abc1234 deployed 8min ago'"
-note "  4. Groq LLM diagnoses root cause + suggests fix command"
-note "  5. Posts to Slack within ~3 seconds of alert firing"
-note "  6. Records MTTR when alert resolves (DORA metric)"
-
-# ─── Step 6: Chaos Engineering ──────────────────────────────────────────────
-section "6. Chaos Engineering — We Break It On Purpose"
-
-echo ""
-note "Run 'make chaos' to demonstrate live:"
-note "  1. Kills secureship container"
-note "  2. Verifies ServiceDown alert fires within 90 seconds"
-note "  3. Verifies container auto-restarts (restart: unless-stopped)"
-note "  4. Verifies API actually works after restart (not just container up)"
-note "  5. Generates postmortem pre-fill automatically"
-echo ""
-note "Run 'make chaos-oom' to simulate memory exhaustion"
-note "Run 'make chaos-depkill' to test Loki dependency failure"
-echo ""
-note "Previous chaos experiment results:"
-ls docs/postmortems/*.md 2>/dev/null | grep -v TEMPLATE | while read f; do
-    echo "  → $(basename $f)"
-done
-
-# ─── Step 7: Security ────────────────────────────────────────────────────────
-section "7. Security"
-
-note "CI/CD: OIDC authentication — no long-lived AWS keys stored in GitHub"
-note "Containers: non-root user, read-only filesystem mounts, no privileged"
-note "EC2 access: SSM only — port 22 closed, zero inbound ports open"
-note "Secrets: SSM Parameter Store with encryption, never in env files or code"
-note "Scanning: Trivy (CVEs) + Bandit (SAST) + TruffleHog (secret leaks) in CI"
-note "Audit: CloudTrail → EventBridge → Lambda → Slack within 30s of any"
-note "       destructive AWS op (delete table, create IAM key, terminate EC2)"
-note "IMDSv2: enforced on all EC2 instances (prevents SSRF credential theft)"
-
-# ─── Summary ────────────────────────────────────────────────────────────────
-section "Summary"
-
-echo "ObserveOps demonstrates:"
-echo ""
-echo "  System Design:  Two-server architecture, SLOs with error budgets,"
-echo "                  circuit breaker, rate limiting, pagination"
-echo "  AIOps:          RAG assistant + alert autopilot with deploy context"
-echo "  Reliability:    Chaos engineering, deadman switch, postmortems"
-echo "  Security:       OIDC, SSM, audit alerter, Trivy scanning"
-echo "  Operations:     DORA metrics, runbooks, ADRs, rolling deploy"
-echo ""
-echo "  ADRs:  docs/adr/   (8 architectural decisions with full WHY)"
-echo "  Postmortems: docs/postmortems/ (real chaos experiment results)"
-echo ""
-echo -e "${GREEN}Full repo: https://github.com/RohanReddy-M/observeops${NC}"
+# ── 5. Where to look ──────────────────────────────────────────────────────────
+section "5. Where to look"
+say "Grafana      http://localhost:3000/grafana/     admin / observeops123 (local only)"
+say "Prometheus   ${PROM}/"
+say "AlertManager http://localhost:9093"
+say "Log pipeline http://localhost:9080/graph        (Alloy's component graph)"
+say "Decisions    docs/adr/        what was chosen, what it cost, what is still wrong"
+say "Runbooks     docs/runbooks/   the same files the assistant answers from"
 echo ""

@@ -140,10 +140,13 @@ def cmd_start(args):
             scenario = wanted[0]
 
     net = network_name()
-    if scenario.get("override"):
+    if scenario.get("override") or scenario.get("override_yaml"):
         os.makedirs(STATE_DIR, exist_ok=True)
-        with open(OVERRIDE, "w", encoding="utf-8") as f:       # JSON is valid YAML
-            json.dump({"services": scenario["override"]}, f)
+        with open(OVERRIDE, "w", encoding="utf-8") as f:
+            if scenario.get("override_yaml"):                  # text, when a YAML tag is needed
+                f.write(scenario["override_yaml"])
+            else:                                              # JSON is valid YAML
+                json.dump({"services": scenario["override"]}, f)
     try:
         for argv in scenario["inject"]:
             run(expand(argv, net), check=True)

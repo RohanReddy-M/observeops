@@ -1,0 +1,110 @@
+// ─── Grafana Alloy: log shipping ─────────────────────────────────────────────
+// Alloy runs on every host. It finds the Docker containers on that host, reads
+// their output, attaches labels, and pushes the lines to Loki.
+//
+// It replaced Promtail, which reached end of life in March 2026. This file was
+// produced with Alloy's own converter (`alloy convert --source-format=promtail`)
+// and then trimmed, so the labels on every log line are the same as before and
+// no dashboard or query had to change.
+//
+// How to read it: each block is a component, and `forward_to` / `targets` wire
+// one component's output into the next. Data flows top to bottom:
+//
+//   discovery.docker ──▶ loki.source.docker ──▶ loki.process ──▶ loki.write ──▶ Loki
+//   (which containers)   (read their logs)      (parse, label)   (send)
+//
+// See the wiring live at http://localhost:9080/graph
+
+// 1. Which containers exist on this host. Asked from the Docker daemon, so a
+//    container started later is picked up without touching this file.
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+}
+
+// 2. Turn Docker's metadata into the labels a log line is stored under.
+//    Docker reports names with a leading slash ("/secureship"); the regex drops it.
+//
+//    Labels are the ONLY thing Loki indexes, so each distinct label value is a
+//    separate stream. Keep them few and low-cardinality: `container` has a dozen
+//    values. The image name used to be a label as well; it carries the commit
+//    tag, so every deploy would have created a new set of streams for nothing.
+discovery.relabel "containers" {
+	targets = []
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "docker"
+	}
+}
+
+// 3. Read the logs of those containers.
+loki.source.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	targets          = discovery.docker.containers.targets
+	relabel_rules    = discovery.relabel.containers.rules
+	forward_to       = [loki.process.containers.receiver]
+	refresh_interval = "5s"
+}
+
+// 4. The services log JSON. Pull out two fields:
+//      level      becomes a label, so {container="secureship", level="ERROR"}
+//                 is an index lookup rather than a scan of every line
+//      timestamp  becomes the entry's time, so a line is stored at the moment the
+//                 application wrote it, not the moment Alloy happened to read it
+//    Lines that are not JSON (nginx errors, Prometheus logs) pass through as they
+//    are, with only the labels from step 2.
+loki.process "containers" {
+	forward_to = [loki.write.loki.receiver]
+
+	stage.json {
+		expressions = {
+			level     = "level",
+			timestamp = "timestamp",
+		}
+	}
+
+	stage.labels {
+		values = {
+			level = null,
+		}
+	}
+
+	stage.timestamp {
+		source = "timestamp"
+		format = "RFC3339Nano"
+	}
+}
+
+// The host's own syslog (dockerd, the kernel's out-of-memory killer, cloud-init).
+loki.source.file "syslog" {
+	targets = [{
+		__address__ = "localhost",
+		__path__    = "/var/log/syslog",
+		job         = "syslog",
+	}]
+	forward_to = [loki.write.loki.receiver]
+}
+
+// 5. Where to send. "obs-server" is the observability host, mapped by
+//    docker-compose extra_hosts: its private IP in production, the Docker host
+//    on a laptop. Same file in both places (ADR-011).
+//
+//    One error is normal the first time Alloy starts on a host: "entry too far
+//    behind". It finds the old output of long-running containers, and Loki
+//    refuses lines much older than what it already holds. Nothing current is lost.
+//
+//    If Loki is unreachable Alloy keeps retrying with backoff and remembers how
+//    far it had read (--storage.path), so a short Loki outage delays logs
+//    instead of losing them.
+loki.write "loki" {
+	endpoint {
+		url = "http://obs-server:3100/loki/api/v1/push"
+	}
+}

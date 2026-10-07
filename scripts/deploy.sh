@@ -85,7 +85,9 @@ done
 # roll back to and force a re-pull in the middle of an incident.
 if [ "$1" != "--rollback" ]; then
     log_info "Pruning unused Docker images..."
-    docker image prune -a -f 2>/dev/null || true
+    # Output discarded: it lists every deleted layer, and CI can only read back
+    # the first 24,000 characters of this script's output from SSM.
+    docker image prune -a -f > /dev/null 2>&1 || true
 fi
 
 # Verify disk space — need at least 2GB free to pull/build images
@@ -144,7 +146,9 @@ if [ "$1" == "--rollback" ]; then
     # reboot must bring back the version we rolled back to, not the one that failed.
     set_env IMAGE_TAG "$IMAGE_TAG"
     set_env ECR_REGISTRY "$ECR_REGISTRY"
-    docker compose -f "$APP_DIR/docker-compose.yml" up -d secureship statusservice ragservice
+    # --no-deps for the same reason as the forward path below: without it compose
+    # would also start the Loki it lists as a dependency, on the wrong host.
+    docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps secureship statusservice ragservice llm-alert-autopilot
 
     log_info "Rollback issued. Verifying..."
     for _ in $(seq 1 12); do
@@ -176,10 +180,12 @@ fi
 # ─── Pull Latest Images ───────────────────────────────────────────────────────
 if [ "$1" != "--local" ] && [ -n "$ECR_REGISTRY" ]; then
     log_info "Pulling latest images from ECR..."
-    docker compose -f "$APP_DIR/docker-compose.yml" pull secureship statusservice ragservice
+    # --quiet for the same reason as the prune above: per-layer progress lines
+    # would use up the output CI is able to show.
+    docker compose -f "$APP_DIR/docker-compose.yml" pull --quiet secureship statusservice ragservice llm-alert-autopilot
 else
     log_info "Building images locally..."
-    docker compose -f "$APP_DIR/docker-compose.yml" build secureship statusservice ragservice
+    docker compose -f "$APP_DIR/docker-compose.yml" build secureship statusservice ragservice llm-alert-autopilot
 fi
 
 # ─── Refresh .env ─────────────────────────────────────────────────────────────
@@ -223,13 +229,11 @@ fi
 
 OBS_IP="${OBS_SERVER_IP:-$(ssm_get obs_server_ip)}"
 if [ -n "$OBS_IP" ]; then
-    # OBS_SERVER_IP: what "obs-server" resolves to for nginx and the OTel collector.
-    # LOKI_HOST: used by promtail to ship app-server logs to Loki on the obs server.
-    # LOKI_URL / GRAFANA_URL: used by llm-alert-autopilot.
+    # OBS_SERVER_IP: what "obs-server" resolves to for nginx, the OTel collector
+    # and Alloy (the log shipper).
+    # LOKI_URL: where llm-alert-autopilot queries logs.
     set_env OBS_SERVER_IP "$OBS_IP"
-    set_env LOKI_HOST "$OBS_IP"
     set_env LOKI_URL "http://${OBS_IP}:3100"
-    set_env GRAFANA_URL "http://${OBS_IP}:3000"
     log_info "Observability server address written to .env: ${OBS_IP} ✓"
 else
     log_warning "Obs server IP not found — Grafana/Prometheus proxy, traces and log shipping will not work"
@@ -278,9 +282,15 @@ docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps statusservice
 log_info "Deploying RAGService..."
 docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps ragservice
 
+# Three minutes, not one. RAGService imports PyTorch and loads an embedding model
+# before it can answer. On a warm host that takes about 20 s; on the first start
+# after a fresh image pull, on a 2 GB burstable instance with a cold disk cache,
+# it can take well over a minute. A health timeout shorter than the slowest
+# legitimate start does not catch failures, it manufactures them, and here the
+# "failure" would trigger a rollback of a perfectly good deploy.
 log_info "Waiting for RAGService to be healthy..."
 RAG_RETRIES=0
-RAG_MAX_RETRIES=12
+RAG_MAX_RETRIES=36
 RAG_HEALTHY=false
 while [ $RAG_RETRIES -lt $RAG_MAX_RETRIES ]; do
     if curl -sf http://localhost:8003/health > /dev/null 2>&1; then
@@ -297,7 +307,7 @@ done
 # and the deploy would carry on as if nothing were wrong — the only thing that
 # eventually caught it was the much coarser smoke-test block at the end.
 if [ "$RAG_HEALTHY" = false ]; then
-    log_error "RAGService failed to become healthy after 60 seconds"
+    log_error "RAGService failed to become healthy after 180 seconds"
     log_warning "Initiating automatic rollback..."
     if [ -f "$ROLLBACK_FILE" ]; then
         "$0" --rollback
@@ -307,41 +317,36 @@ if [ "$RAG_HEALTHY" = false ]; then
     exit 1
 fi
 
-# FAISS is in-memory (see ADR-005) — a freshly-recreated ragservice container
-# always starts with zero documents and needs a re-ingest. But `docker compose up`
-# is a no-op if the container's config hasn't changed (e.g. a re-run with the same
-# IMAGE_TAG), in which case the existing container — and its already-populated
-# FAISS store — is untouched. Re-ingesting on top of that would duplicate every
-# runbook chunk and degrade retrieval quality. Check the doc count first and only
-# ingest into a genuinely empty store.
-EXISTING_DOCS=$(curl -sf http://localhost:8003/health 2>/dev/null | python3 -c "
+# The knowledge base is not loaded from here. RAGService builds its index from
+# docs/runbooks (mounted into the container) every time it starts, so there is
+# nothing to ingest. What IS checked: that it really did start from the runbooks
+# and not from its built-in fallback, which would mean the mount is missing and
+# every answer would come from nine stale paragraphs.
+#
+# This replaced an "ingest the runbooks unless the store already has documents"
+# step. The store always had documents (the fallback), so that step skipped
+# itself on every deploy and the runbooks were never loaded in production.
+KB_STATE=$(curl -sf http://localhost:8003/health 2>/dev/null | python3 -c "
 import sys, json
 try:
-    print(json.load(sys.stdin).get('vector_store_docs', 0))
+    d = json.load(sys.stdin)
+    print(d.get('knowledge_base_source', 'unknown'), d.get('vector_store_docs', 0))
 except Exception:
-    print(0)
-" 2>/dev/null || echo "0")
-
-if [ "${EXISTING_DOCS:-0}" -gt 0 ] 2>/dev/null; then
-    log_info "RAGService vector store already has ${EXISTING_DOCS} docs (container wasn't recreated) — skipping re-ingest to avoid duplicates"
+    print('unknown 0')
+" 2>/dev/null || echo "unknown 0")
+KB_SOURCE="${KB_STATE%% *}"
+KB_DOCS="${KB_STATE##* }"
+if [ "$KB_SOURCE" = "runbooks" ] && [ "${KB_DOCS:-0}" -gt 0 ] 2>/dev/null; then
+    log_info "RAGService knowledge base: ${KB_DOCS} chunks built from docs/runbooks ✓"
 else
-    log_info "Ingesting runbooks into RAGService vector store..."
-    INGESTED=0
-    for f in "$APP_DIR/docs/runbooks"/*.md; do
-        [ -f "$f" ] || continue
-        content=$(cat "$f")
-        fname=$(basename "$f")
-        result=$(echo "$content" | python3 -c "
-import sys, json, urllib.request
-content = sys.stdin.read()
-data = json.dumps({'texts': [content], 'metadatas': [{'source': '${fname}', 'type': 'runbook'}]}).encode()
-req = urllib.request.Request('http://localhost:8003/ingest', data=data, headers={'Content-Type': 'application/json'})
-resp = urllib.request.urlopen(req, timeout=10)
-print(json.loads(resp.read()).get('chunks_created', 0))
-" 2>/dev/null || echo "0")
-        INGESTED=$((INGESTED + result))
-    done
-    log_info "Ingested ${INGESTED} chunks from runbooks into RAGService ✓"
+    log_error "RAGService knowledge base is '${KB_SOURCE}' with ${KB_DOCS} chunks; expected the runbooks"
+    log_warning "Initiating automatic rollback..."
+    if [ -f "$ROLLBACK_FILE" ]; then
+        "$0" --rollback
+    else
+        log_error "No rollback version available. Manual intervention required."
+    fi
+    exit 1
 fi
 
 log_info "Starting app-server-only monitoring services..."
@@ -353,15 +358,17 @@ log_info "Starting app-server-only monitoring services..."
 # compose recreates a container whenever its resolved config changed (including an
 # extra_hosts address that came from .env), so no --force-recreate is needed.
 #
-# --no-deps: docker-compose.yml declares Loki as a dependency of promtail and the
-# autopilot, and Tempo as a dependency of the collector. That is right on one host,
+# --no-deps: docker-compose.yml declares Loki as a dependency of the autopilot
+# and Tempo as a dependency of the collector. That is right on one host,
 # but here they live on the obs server; without the flag compose would start a
 # second, unused Loki and Tempo on this 2 GB instance.
-docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps otel-collector llm-alert-autopilot promtail node-exporter
+docker compose -f "$APP_DIR/docker-compose.yml" up -d --no-deps otel-collector llm-alert-autopilot alloy node-exporter
 
-# nginx resolves upstream hostnames at startup — start it after app containers
-# are registered in Docker DNS to prevent "host not found" crash loop.
-sleep 3
+# nginx goes last. That is no longer about name resolution: nginx.conf now
+# re-resolves its backends at runtime (the `resolve` parameter), so a backend that
+# is recreated later, or missing at startup, does not need nginx restarted. It is
+# last so that the first request it accepts lands on containers already running
+# the new image.
 log_info "Starting nginx..."
 # --force-recreate: `git pull` replaces nginx.conf with a new inode, and a bind
 # mount keeps pointing at the old one, so a plain `up -d` could leave nginx
@@ -399,7 +406,9 @@ check_endpoint "http://localhost:8080/health"     "LLM Alert Autopilot"
 # REFUSED — a deploy that quietly came up with auth disabled is a failed deploy.
 check_endpoint "http://localhost:8001/ready"      "SecureShip readiness (datastore reachable)"
 
-SMOKE_KEY=$(grep -E '^SECURESHIP_API_KEY=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2-)
+# `|| true`: under `set -eo pipefail` a grep that matches nothing fails the whole
+# assignment and would end the script right here, without a word.
+SMOKE_KEY=$(grep -E '^SECURESHIP_API_KEY=' "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)
 if [ -n "$SMOKE_KEY" ]; then
     if curl -sf -H "X-API-Key: ${SMOKE_KEY}" "http://localhost:8001/api/v1/ships?limit=1" > /dev/null 2>&1; then
         log_info "✓ Authenticated API call succeeded"
@@ -465,15 +474,24 @@ else
         }" > /dev/null 2>&1 || true  # non-fatal — monitoring shouldn't block deploy
 
     # ─── Grafana deployment annotation ───────────────────────────────────────
-    # Posted from EC2 (not GitHub Actions) so the private Grafana URL always works.
-    GRAFANA_PASS="${GRAFANA_PASSWORD:-observeops123}"
-    if [ -n "$OBS_IP" ]; then
-        curl -sf -X POST "http://${OBS_IP}:3000/api/annotations" \
+    # A vertical marker on every dashboard at the moment of the deploy, so "did
+    # this start with a release?" is answered by looking. Posted from here, not
+    # from GitHub Actions, because Grafana has no public address.
+    # Never fatal: a missing marker must not fail a deploy. But say what happened;
+    # this used to print "posted" whether or not the request had succeeded.
+    GRAFANA_PASS=$(ssm_get grafana_admin_password --with-decryption)
+    if [ -n "$OBS_IP" ] && [ -n "$GRAFANA_PASS" ]; then
+        if curl -sf -m 10 -X POST "http://${OBS_IP}:3000/api/annotations" \
             -u "admin:${GRAFANA_PASS}" \
             -H "Content-Type: application/json" \
             -d "{\"text\":\"Deploy: ${DEPLOY_COMMIT} by ${DEPLOY_USER}\",\"tags\":[\"deployment\",\"production\"]}" \
-            > /dev/null 2>&1 || true
-        log_info "Grafana deployment annotation posted ✓"
+            > /dev/null 2>&1; then
+            log_info "Grafana deployment annotation posted ✓"
+        else
+            log_warning "Grafana deployment annotation was NOT posted (Grafana unreachable or rejected it)"
+        fi
+    else
+        log_warning "Skipping the Grafana annotation: obs server address or Grafana password not available"
     fi
 
     echo "$DEPLOY_COMMIT" > "$LAST_DEPLOY_FILE"

@@ -9,13 +9,12 @@
 #   make infra-up     provision AWS infrastructure
 #   make infra-down   destroy all AWS infrastructure
 
-.PHONY: help dev-up dev-down dev-restart logs status \n        test-alerts chaos-crash chaos-oom chaos-depkill gameday gameday-hint gameday-reveal \n        test test-secureship test-ragservice \
-        build build-secureship build-statusservice build-ragservice \
-        deploy rollback \
-        infra-up infra-down plan apply \
-        scan lint fmt \
-        chaos chaos-ragservice chaos-statusservice \
-        clean shell-secureship shell-statusservice
+.PHONY: build chaos chaos-crash chaos-depkill chaos-oom chaos-ragservice \
+        clean deploy dev-down dev-restart dev-up fmt gameday gameday-hint \
+        gameday-reveal help infra-down infra-up lint load-test logs plan \
+        pre-commit-install pre-commit-run rollback scan shell-secureship \
+        shell-statusservice status test test-alerts test-autopilot \
+        test-lambda test-ragservice test-secureship test-statusservice
 
 # ─── Default target ───────────────────────────────────────────────────────────
 .DEFAULT_GOAL := help
@@ -89,7 +88,7 @@ dev-up:
 	@echo "    StatusService:        http://localhost:8002"
 	@echo "    RAGService:           http://localhost:8003/docs"
 	@echo "    LLM Alert Autopilot:  http://localhost:8080/health"
-	@echo "    Grafana:              http://localhost:3000/grafana/  (admin / observeops123)"
+	@echo "    Grafana:              http://localhost:3000/grafana/  (admin / observeops123 locally; generated in production)"
 	@echo "    Prometheus:           http://localhost:9090/prometheus/"
 	@echo "    AlertManager:         http://localhost:9093"
 	@echo "    Via Nginx:            http://localhost"
@@ -119,7 +118,7 @@ status:
 	@curl -sf http://localhost:8002/health > /dev/null && echo "  StatusService:       healthy" || echo "  StatusService:       UNREACHABLE"
 	@curl -sf http://localhost:8003/health > /dev/null && echo "  RAGService:          healthy" || echo "  RAGService:          UNREACHABLE"
 	@curl -sf http://localhost:8080/health > /dev/null && echo "  LLM Alert Autopilot: healthy" || echo "  LLM Alert Autopilot: UNREACHABLE"
-	@curl -sf http://localhost:9090/-/healthy > /dev/null && echo "  Prometheus:          healthy" || echo "  Prometheus:          UNREACHABLE"
+	@curl -sf http://localhost:9090/prometheus/-/healthy > /dev/null && echo "  Prometheus:          healthy" || echo "  Prometheus:          UNREACHABLE"
 	@curl -sf http://localhost:3000/api/health > /dev/null && echo "  Grafana:             healthy" || echo "  Grafana:             UNREACHABLE"
 	@curl -sf http://localhost:9093/-/healthy > /dev/null && echo "  AlertManager:        healthy" || echo "  AlertManager:        UNREACHABLE"
 	@echo ""
@@ -128,7 +127,7 @@ status:
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
 
-test: test-secureship test-statusservice test-ragservice test-alerts
+test: test-secureship test-statusservice test-ragservice test-autopilot test-lambda test-alerts
 	@echo "==> All tests passed."
 
 # Alert and recording rules are code, so they are tested like code: promtool feeds
@@ -157,6 +156,16 @@ test-ragservice:
 	pip install -q -r apps/ragservice/requirements.txt
 	pip install -q pytest
 	pytest apps/ragservice/tests/ -v
+
+test-autopilot:
+	@echo "==> Testing LLM Alert Autopilot..."
+	pip install -q pytest
+	pytest apps/llm-alert-autopilot/tests/ -v
+
+test-lambda:
+	@echo "==> Testing Lambda handlers (needs boto3, installed with the secureship requirements)..."
+	pip install -q pytest boto3
+	pytest apps/lambda/tests/ -v
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 
@@ -202,13 +211,23 @@ pre-commit-run:
 
 # ─── Deploy ───────────────────────────────────────────────────────────────────
 
+# deploy.sh runs ON the app server, started by the pipeline over SSM. From a
+# laptop, "deploy" means: run the pipeline on main.
 deploy:
-	@echo "==> Deploying to production via SSM..."
-	@[ -n "$$EC2_INSTANCE_ID" ] || (echo "ERROR: EC2_INSTANCE_ID not set" && exit 1)
-	bash scripts/deploy.sh
+	@echo "==> Running the CI/CD pipeline on main (builds, deploys, smoke-tests)..."
+	gh workflow run deploy.yml --ref main
+	@echo "    Watch it: gh run watch"
 
+# Two ways back, for two situations:
+#   a deploy that fails its own checks   deploy.sh rolls itself back, nothing to do
+#   a release that is healthy but wrong  revert the commit and let the pipeline
+#                                        deploy the revert (below). The history then
+#                                        shows what was undone and why.
 rollback:
-	bash scripts/deploy.sh --rollback
+	@echo "Roll back by reverting the bad commit and pushing; the pipeline deploys the revert:"
+	@echo "    git revert <sha> && git push"
+	@echo "Emergency, on the server itself (aws ssm start-session --target <app instance id>):"
+	@echo "    sudo -iu ubuntu bash /opt/observeops/scripts/deploy.sh --rollback"
 
 # ─── Infrastructure ───────────────────────────────────────────────────────────
 
