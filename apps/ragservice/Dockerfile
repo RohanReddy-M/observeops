@@ -37,9 +37,15 @@ COPY . .
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Tell sentence-transformers and HuggingFace where the cached model lives
+# Where the model baked in above lives.
 ENV SENTENCE_TRANSFORMERS_HOME=/app/.model_cache
-ENV TRANSFORMERS_CACHE=/app/.model_cache
+ENV HF_HOME=/app/.model_cache
+# The model is already in the image, so never contact huggingface.co at start-up.
+# Without this the library checks the hub for a newer revision on every start:
+# the service would then start slowly, or not at all, whenever a third-party
+# website is slow or down. A dependency you only need at build time should not
+# be a dependency at run time.
+ENV HF_HUB_OFFLINE=1
 
 EXPOSE 8003
 

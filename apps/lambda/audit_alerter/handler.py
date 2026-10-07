@@ -1,9 +1,15 @@
 """
 Audit Alerter Lambda
 ====================
-Triggered by EventBridge when CloudTrail records a dangerous AWS API call.
-Formats the event into a human-readable Slack message:
-  who did it, what they did, when, from which IP.
+Triggered by EventBridge when CloudTrail records a sensitive AWS API call that
+was not made by Terraform (the rule filters those out; see the Terraform module).
+Formats the event into a Slack message: who did it, what they did, when, from
+which IP.
+
+Needs a CloudTrail trail in the account: without one, EventBridge never receives
+"AWS API Call via CloudTrail" events and this function is never invoked.
+IAM events only reach EventBridge in us-east-1, so the IAM entries below do
+nothing while the rule lives in another region.
 
 No external dependencies — uses only stdlib + boto3 (pre-installed in Lambda).
 """
@@ -29,11 +35,14 @@ def get_ssm():
     return _ssm
 
 
+# The parameter NAME comes from the function's configuration (set by Terraform);
+# the webhook itself is read at run time, so the secret is never visible in the
+# Lambda console or in the function's environment.
+SLACK_WEBHOOK_PARAM = os.environ.get("SLACK_WEBHOOK_PARAM", "/observeops/production/slack_webhook_critical")
+
+
 def get_slack_webhook() -> str:
-    param = get_ssm().get_parameter(
-        Name="/observeops/production/slack_webhook_critical",
-        WithDecryption=True,
-    )
+    param = get_ssm().get_parameter(Name=SLACK_WEBHOOK_PARAM, WithDecryption=True)
     return param["Parameter"]["Value"]
 
 

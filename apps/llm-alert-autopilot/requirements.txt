@@ -2,8 +2,8 @@
 # running container on 2026-10-07. This file used to pin groq 0.12.0 with
 # httpx<0.27.0; one set of versions across all four services means one thing to
 # reason about and one Dependabot pull request to review.
-fastapi==0.141.1
+fastapi==0.142.2
 uvicorn[standard]==0.54.0
-groq==0.37.1
+groq==0.37.1                     # held below 1.0: langchain-groq requires groq<1.0. Both services use one version
 httpx==0.28.1
 prometheus-client==0.26.0

@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import time
 import logging
 import json
@@ -33,7 +35,7 @@ trace.set_tracer_provider(_provider)
 try:
     import boto3
     from boto3.dynamodb.conditions import Attr
-    from botocore.exceptions import ClientError
+    from botocore.config import Config as BotoConfig
     DYNAMODB_AVAILABLE = True
 except ImportError:
     DYNAMODB_AVAILABLE = False
@@ -110,9 +112,13 @@ TRUST_PROXY = os.getenv("TRUST_PROXY", "true").lower() in ("true", "1", "yes")
 
 
 def _rate_limit_key(request: Request) -> str:
+    # Only the REAL key identifies a caller. This used to return whatever was in
+    # the X-API-Key header, valid or not, so a client could give itself a fresh
+    # rate-limit bucket on every request simply by sending a different made-up key.
+    # The bucket name is a hash, so the key itself never lands in limiter storage.
     key = request.headers.get("X-API-Key")
-    if key:
-        return key
+    if key and API_KEY and hmac.compare_digest(key.encode(), API_KEY.encode()):
+        return "key:" + hashlib.sha256(key.encode()).hexdigest()[:16]
     if TRUST_PROXY:
         real_ip = request.headers.get("X-Real-IP")
         if real_ip:
@@ -155,7 +161,9 @@ if not API_KEY:
 async def verify_api_key(api_key: Optional[str] = Security(_api_key_header)):
     if not API_KEY:
         return  # Auth not configured — local development only; see REQUIRE_API_KEY
-    if api_key != API_KEY:
+    # compare_digest takes the same time whether the first character is wrong or
+    # the last, so response timing does not reveal how much of a guess was right.
+    if not api_key or not hmac.compare_digest(api_key.encode(), API_KEY.encode()):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -183,11 +191,29 @@ _LOCAL_SHIPS = {
 }
 
 
+# botocore's defaults are a 60 s connect timeout, a 60 s read timeout and several
+# retries: one unreachable endpoint can hold a request for minutes. A caller has
+# given up long before that, and every request stuck waiting occupies a worker
+# thread. These bound a datastore call to a few seconds in the worst case, after
+# which the caller gets a 503 it can retry.
+_BOTO_CONFIG = None
+_TABLE = None
+
+
 def get_dynamodb_table():
+    """The DynamoDB table, or None when running on the local sample data."""
+    global _BOTO_CONFIG, _TABLE
     if not DYNAMODB_AVAILABLE or not DYNAMODB_TABLE:
         return None
-    region = os.getenv("AWS_DEFAULT_REGION", "ap-south-1")
-    return boto3.resource("dynamodb", region_name=region).Table(DYNAMODB_TABLE)
+    if _TABLE is None:      # built once; the resource object is safe to reuse
+        _BOTO_CONFIG = BotoConfig(
+            connect_timeout=2,
+            read_timeout=3,
+            retries={"max_attempts": 2, "mode": "standard"},
+        )
+        region = os.getenv("AWS_DEFAULT_REGION", "ap-south-1")
+        _TABLE = boto3.resource("dynamodb", region_name=region, config=_BOTO_CONFIG).Table(DYNAMODB_TABLE)
+    return _TABLE
 
 
 # A single scan() returns at most 1 MB and reports LastEvaluatedKey when there is
@@ -257,7 +283,10 @@ def db_put_ship(ship: dict) -> dict:
     try:
         table.put_item(Item=ship)
         return ship
-    except ClientError as e:
+    # Exception, as in the read paths, not only botocore's ClientError: missing
+    # credentials and unreachable endpoints raise other types, and those surfaced
+    # as a bare 500 on writes while the same fault on a read was a clean 503.
+    except Exception as e:
         logger.error("dynamodb_error", extra={"operation": "put_item", "error": str(e)})
         raise DataStoreUnavailable(str(e)) from e
 
@@ -272,7 +301,7 @@ def db_delete_ship(ship_id: str) -> bool:
     try:
         table.delete_item(Key={"ship_id": ship_id})
         return True
-    except ClientError as e:
+    except Exception as e:
         logger.error("dynamodb_error", extra={"operation": "delete_item", "error": str(e)})
         raise DataStoreUnavailable(str(e)) from e
 
@@ -355,7 +384,7 @@ READY_CACHE_TTL = float(os.getenv("READY_CACHE_TTL", "5"))
 
 
 @app.get("/ready")
-async def readiness_check(response: Response):
+def readiness_check(response: Response):
     table = get_dynamodb_table()
     if table is None:
         return {"status": "ready", "storage": "local", "dependency_checked": False}
@@ -370,9 +399,11 @@ async def readiness_check(response: Response):
             logger.error("readiness_failed", extra={"dependency": "dynamodb", "error": str(e)})
 
     if not _READY_CACHE["ok"]:
+        # The reason is in the log line above, for operators. It is not returned:
+        # this endpoint is reachable from the internet, and an AWS error message
+        # names the account, the role and the table.
         response.status_code = 503
-        return {"status": "not_ready", "storage": "dynamodb",
-                "dependency_checked": True, "error": _READY_CACHE["error"]}
+        return {"status": "not_ready", "storage": "dynamodb", "dependency_checked": True}
     return {"status": "ready", "storage": "dynamodb", "dependency_checked": True}
 
 
@@ -382,9 +413,16 @@ async def metrics():
 
 
 # v1 API
+#
+# These handlers are plain `def`, not `async def`, on purpose. The DynamoDB client
+# is synchronous: it blocks the calling thread until AWS answers. Inside an
+# `async def` handler that thread is the event loop itself, so one slow datastore
+# call would freeze every other request in the process, /health included, and the
+# container would be restarted for being "unhealthy" while it was merely waiting.
+# FastAPI runs a `def` handler in a worker thread, which keeps the loop free.
 @app.get("/api/v1/ships", dependencies=[Depends(verify_api_key)])
 @limiter.limit("100/minute")
-async def list_ships(
+def list_ships(
     request: Request,
     limit: int = 20,
     offset: int = 0,
@@ -406,7 +444,9 @@ async def list_ships(
         if status not in valid_statuses:
             raise HTTPException(status_code=400, detail=f"status must be one of {valid_statuses}")
 
-    # Filter is pushed into the query rather than applied after the read.
+    # The status filter is evaluated by DynamoDB, but AFTER it has read the items
+    # (see the note on scan above), and the page is then cut in memory. Fine for
+    # a small table; the scalable form is a Query on an index plus a cursor.
     all_ships = db_list_ships(status=status)
 
     total = len(all_ships)
@@ -424,7 +464,7 @@ async def list_ships(
 
 @app.get("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
 @limiter.limit("100/minute")
-async def get_ship(request: Request, ship_id: str):
+def get_ship(request: Request, ship_id: str):
     ship = db_get_ship(ship_id)
     if not ship:
         raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")
@@ -433,7 +473,7 @@ async def get_ship(request: Request, ship_id: str):
 
 @app.post("/api/v1/ships", dependencies=[Depends(verify_api_key)])
 @limiter.limit("30/minute")
-async def create_ship(request: Request, ship: ShipCreate):
+def create_ship(request: Request, ship: ShipCreate):
     saved = db_put_ship(ship.model_dump())
     logger.info("ship_created", extra={"ship_id": saved["ship_id"]})
     return {"message": "Ship created", "ship": saved, "timestamp": datetime.now(timezone.utc).isoformat()}
@@ -441,7 +481,7 @@ async def create_ship(request: Request, ship: ShipCreate):
 
 @app.put("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
 @limiter.limit("30/minute")
-async def update_ship(request: Request, ship_id: str, updates: ShipUpdate):
+def update_ship(request: Request, ship_id: str, updates: ShipUpdate):
     existing = db_get_ship(ship_id)
     if not existing:
         raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")
@@ -453,7 +493,7 @@ async def update_ship(request: Request, ship_id: str, updates: ShipUpdate):
 
 @app.delete("/api/v1/ships/{ship_id}", dependencies=[Depends(verify_api_key)])
 @limiter.limit("30/minute")
-async def delete_ship(request: Request, ship_id: str):
+def delete_ship(request: Request, ship_id: str):
     existing = db_get_ship(ship_id)
     if not existing:
         raise HTTPException(status_code=404, detail=f"Ship {ship_id} not found")

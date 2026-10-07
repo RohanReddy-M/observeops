@@ -247,10 +247,22 @@ class _FakeRequest:
         self.client = type("Client", (), {"host": client_host})()
 
 
-def test_rate_limit_key_prefers_the_api_key():
-    from main import _rate_limit_key
-    request = _FakeRequest({"X-API-Key": "key-123", "X-Real-IP": "203.0.113.9"})
-    assert _rate_limit_key(request) == "key-123"
+def test_rate_limit_key_is_the_real_api_key_and_never_the_key_itself(monkeypatch):
+    import main
+    monkeypatch.setattr(main, "API_KEY", "the-real-key")
+    request = _FakeRequest({"X-API-Key": "the-real-key", "X-Real-IP": "203.0.113.9"})
+    bucket = main._rate_limit_key(request)
+    assert bucket.startswith("key:")
+    assert "the-real-key" not in bucket          # a hash, so the secret is not stored
+
+
+def test_rate_limit_key_ignores_a_made_up_api_key(monkeypatch):
+    """A caller must not be able to mint itself a new bucket per request."""
+    import main
+    monkeypatch.setattr(main, "API_KEY", "the-real-key")
+    first = main._rate_limit_key(_FakeRequest({"X-API-Key": "guess-1", "X-Real-IP": "203.0.113.9"}))
+    second = main._rate_limit_key(_FakeRequest({"X-API-Key": "guess-2", "X-Real-IP": "203.0.113.9"}))
+    assert first == second == "203.0.113.9"      # counted against the address instead
 
 
 def test_rate_limit_key_uses_the_address_our_proxy_vouches_for():
@@ -272,3 +284,75 @@ def test_rate_limit_key_ignores_a_forged_leftmost_forwarded_for():
 def test_rate_limit_key_falls_back_to_the_socket_address():
     from main import _rate_limit_key
     assert _rate_limit_key(_FakeRequest({}, client_host="192.0.2.44")) == "192.0.2.44"
+
+
+# ── Auth enforced ─────────────────────────────────────────────────────────────
+# The suite above only ever ran with auth switched off, which is how the API was
+# deployed with no key at all without a single test noticing.
+
+def test_auth_rejects_a_missing_or_wrong_key_and_accepts_the_right_one(monkeypatch):
+    import main
+    monkeypatch.setattr(main, "API_KEY", "the-real-key")
+    assert client.get("/api/v1/ships").status_code == 401
+    assert client.get("/api/v1/ships", headers={"X-API-Key": "wrong"}).status_code == 401
+    assert client.get("/api/v1/ships", headers={"X-API-Key": "the-real-key"}).status_code == 200
+
+
+def test_health_stays_open_when_auth_is_on(monkeypatch):
+    """Load balancers and Prometheus cannot send a key; liveness must not need one."""
+    import main
+    monkeypatch.setattr(main, "API_KEY", "the-real-key")
+    assert client.get("/health").status_code == 200
+    assert client.get("/metrics").status_code == 200
+
+
+# ── Datastore failure contract ────────────────────────────────────────────────
+class _BrokenTable:
+    """Stands in for DynamoDB when credentials or the network are gone."""
+    def _fail(self, *args, **kwargs):
+        raise RuntimeError("Unable to locate credentials for arn:aws:iam::123456789012:role/secret-role")
+    scan = get_item = put_item = delete_item = load = _fail
+
+
+def test_every_datastore_failure_is_a_503_not_a_500(monkeypatch):
+    import main
+    monkeypatch.setattr(main, "get_dynamodb_table", lambda: _BrokenTable())
+    payload = {"ship_id": "ship-x", "name": "SS X", "status": "active", "cargo": "grain"}
+    assert client.get("/api/v1/ships").status_code == 503
+    assert client.get("/api/v1/ships/ship-001").status_code == 503
+    assert client.post("/api/v1/ships", json=payload).status_code == 503      # was a 500
+
+
+def test_readiness_failure_does_not_leak_the_reason(monkeypatch):
+    import main
+    monkeypatch.setattr(main, "get_dynamodb_table", lambda: _BrokenTable())
+    monkeypatch.setitem(main._READY_CACHE, "checked_at", 0.0)
+    response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
+    assert "arn:aws" not in response.text         # account and role stay in the logs
+    assert "error" not in response.json()
+    monkeypatch.setitem(main._READY_CACHE, "checked_at", 0.0)   # do not poison later tests
+
+
+def test_datastore_handlers_do_not_block_the_event_loop():
+    """They call a blocking client, so they must be plain functions (threadpool)."""
+    import inspect
+    import main
+    for handler in (main.list_ships, main.get_ship, main.create_ship,
+                    main.update_ship, main.delete_ship, main.readiness_check):
+        assert not inspect.iscoroutinefunction(handler), handler.__name__
+
+
+def test_dynamodb_client_has_deadlines(monkeypatch):
+    """botocore's default is 60 s per attempt; a request must not wait that long."""
+    import main
+    if not main.DYNAMODB_AVAILABLE:
+        pytest.skip("boto3 not installed")
+    monkeypatch.setattr(main, "DYNAMODB_TABLE", "any-table")
+    monkeypatch.setattr(main, "_TABLE", None)
+    main.get_dynamodb_table()
+    assert main._BOTO_CONFIG.connect_timeout <= 3
+    assert main._BOTO_CONFIG.read_timeout <= 5
+    assert main._BOTO_CONFIG.retries["max_attempts"] <= 3
+    monkeypatch.setattr(main, "_TABLE", None)

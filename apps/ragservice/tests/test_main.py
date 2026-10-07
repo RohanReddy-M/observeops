@@ -102,3 +102,36 @@ def test_query_answer_is_string():
 def test_query_missing_question_returns_422():
     resp = client.post("/query", json={})
     assert resp.status_code == 422
+
+
+# ── Knowledge base loading ────────────────────────────────────────────────────
+# What the index is built from at start-up. This is the piece that was wrong in
+# production: the runbooks were never loaded, and no test looked.
+
+def test_knowledge_base_is_built_from_the_runbook_files(tmp_path):
+    from main import load_knowledge_base
+    (tmp_path / "service-down.md").write_text("# Service down\nCheck docker ps first.", encoding="utf-8")
+    (tmp_path / "high-latency.md").write_text("# High latency\nLook at p99.", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("not a runbook", encoding="utf-8")
+    (tmp_path / "empty.md").write_text("   ", encoding="utf-8")
+
+    texts, metadatas, source = load_knowledge_base(str(tmp_path))
+
+    assert source == "runbooks"
+    assert [m["source"] for m in metadatas] == ["high-latency.md", "service-down.md"]   # sorted, .md only, no blanks
+    assert all(m["type"] == "runbook" for m in metadatas)
+    assert "docker ps" in texts[1]
+
+
+def test_knowledge_base_falls_back_to_the_built_in_set_and_says_so(tmp_path):
+    from main import load_knowledge_base, SEED_DOCUMENTS
+    texts, metadatas, source = load_knowledge_base(str(tmp_path))      # empty directory
+    assert source == "seed"
+    assert len(texts) == len(SEED_DOCUMENTS)
+    _, _, source_missing = load_knowledge_base(str(tmp_path / "does-not-exist"))
+    assert source_missing == "seed"
+
+
+def test_health_reports_where_the_knowledge_base_came_from():
+    body = client.get("/health").json()
+    assert "knowledge_base_source" in body

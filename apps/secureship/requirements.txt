@@ -1,5 +1,5 @@
 # Web framework - handles HTTP requests, routing, validation
-fastapi==0.141.1
+fastapi==0.142.2
 
 # ASGI server - this actually runs FastAPI (like gunicorn but async)
 # We bind to 0.0.0.0 so it accepts connections from outside the container
@@ -18,14 +18,14 @@ httpx==0.28.1
 # stop depending on it. Re-add (at a current version) if a form endpoint is added.
 
 # AWS SDK - DynamoDB integration (ships table)
-boto3==1.43.72
+boto3==1.43.108
 
 # OpenTelemetry — distributed tracing
-opentelemetry-api==1.28.0
-opentelemetry-sdk==1.28.0
-opentelemetry-instrumentation-fastapi==0.49b0
-opentelemetry-exporter-otlp-proto-grpc==1.28.0
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
+opentelemetry-instrumentation-fastapi==0.66b1
+opentelemetry-exporter-otlp-proto-grpc==1.45.1
 
 # Rate limiting — prevents a single client from exhausting the API
 # Uses the API key as the rate-limit identity so each key gets its own bucket
-slowapi==0.1.9
+slowapi==0.1.10

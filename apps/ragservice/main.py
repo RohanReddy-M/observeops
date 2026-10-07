@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 import time
@@ -30,9 +31,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Default knowledge base ─────────────────────────────────────────────────────
-# These runbooks and incident logs are pre-loaded at startup so the service is
-# useful immediately without any manual ingestion.
+# ── Knowledge base ─────────────────────────────────────────────────────────────
+# The index lives in memory, so it is rebuilt every time the process starts. What
+# it is rebuilt FROM decides whether a restart is harmless or an outage:
+#
+#   RUNBOOKS_DIR has *.md files   the real runbooks (docs/runbooks, mounted by
+#                                 docker-compose). This is every deployment.
+#   otherwise                     the small built-in set below, so the image still
+#                                 does something useful when run on its own.
+#
+# Loading here, and not from the deploy script, is what makes the service
+# self-sufficient: it comes back complete after a crash, an OOM kill or a reboot,
+# none of which run a deploy.
+RUNBOOKS_DIR = os.getenv("RUNBOOKS_DIR", "/app/runbooks")
+
 SEED_DOCUMENTS = [
     {
         "text": (
@@ -146,13 +158,40 @@ def _sync_document_gauge(fallback_delta: int = 0) -> None:
         vector_store_documents.inc(fallback_delta)
 
 
+def load_knowledge_base(directory: str = None):
+    """Return (texts, metadatas, source) for the start-up ingest.
+
+    `source` is "runbooks" when real runbook files were found and "seed" when the
+    built-in fallback was used. It is reported by /health so a deploy can refuse
+    to go live answering from the fallback.
+    """
+    directory = directory or RUNBOOKS_DIR
+    texts, metadatas = [], []
+    for path in sorted(glob.glob(os.path.join(directory, "*.md"))):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as exc:
+            logger.warning(f"could not read runbook {path}: {exc}")
+            continue
+        if text.strip():
+            texts.append(text)
+            metadatas.append({"source": os.path.basename(path), "type": "runbook"})
+    if texts:
+        return texts, metadatas, "runbooks"
+    return ([d["text"] for d in SEED_DOCUMENTS], [d["metadata"] for d in SEED_DOCUMENTS], "seed")
+
+
+KNOWLEDGE_BASE_SOURCE = "none"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    texts = [d["text"] for d in SEED_DOCUMENTS]
-    metadatas = [d["metadata"] for d in SEED_DOCUMENTS]
+    global KNOWLEDGE_BASE_SOURCE
+    texts, metadatas, KNOWLEDGE_BASE_SOURCE = load_knowledge_base()
     count = pipeline.ingest(texts, metadatas)
     _sync_document_gauge(fallback_delta=count)
-    logger.info(f"RAGService ready — {count} document chunks pre-loaded")
+    logger.info(f"RAGService ready — {count} chunks from {len(texts)} documents (source: {KNOWLEDGE_BASE_SOURCE})")
     yield
 
 
@@ -196,6 +235,9 @@ def health():
         "vector_store_ready":  pipeline.vector_store is not None,
         "vector_store_docs":   doc_count,
         "knowledge_base_state": "empty — re-ingest runbooks" if doc_count == 0 else "loaded",
+        # "runbooks" = built from the real runbook files; "seed" = the built-in
+        # fallback, which in a deployment means the runbook directory is not mounted.
+        "knowledge_base_source": KNOWLEDGE_BASE_SOURCE,
     }
 
 

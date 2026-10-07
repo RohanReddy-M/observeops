@@ -55,8 +55,6 @@ app = FastAPI(title="LLM Alert Autopilot", version="2.0.0")
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL", "")
 LOKI_URL      = os.getenv("LOKI_URL", "http://loki:3100")
-GRAFANA_URL   = os.getenv("GRAFANA_URL", "http://grafana:3000")
-GRAFANA_PASS  = os.getenv("GRAFANA_PASSWORD", "observeops123")
 # The model id is configuration, not code. It was hardcoded to
 # "llama-3.1-8b-instant" until the provider retired that model: every diagnosis
 # then failed with a 404, nothing alerted on it, and the fix needed a code change
@@ -134,7 +132,7 @@ def _fetch_loki_logs(service: str) -> list[str]:
     Two things here were wrong before, and together they meant this function had
     never returned a log line:
 
-    - The selector was {job="<service>"}. promtail labels every container's logs
+    - The selector was {job="<service>"}. the log shipper labels every container's logs
       with job="docker" and puts the container name in `container`, so that
       selector matched no stream at all.
     - `start` was the string "now-5m". Loki's HTTP API takes a Unix timestamp (or
