@@ -19,6 +19,12 @@
 # list silently skipped everything not named in it (DynamoDB, Lambda, ECR, the
 # schedule that invoked a Lambda every five minutes), so "down" left a partial
 # stack behind. `terraform destroy` with no targets cannot forget anything.
+#
+# If this script itself is interrupted (closed terminal, lost network) partway through,
+# the state lock can be left held. Clear it before running this again:
+#   aws s3 rm s3://observeops-terraform-state-<account-id>/production/terraform.tfstate.tflock
+# Then re-run. The check at the end of this script runs even when `terraform destroy` itself
+# reports an error, which is what caught this the one time it happened (a DNS failure mid-destroy).
 set -euo pipefail
 
 ENV="${ENV:-production}"
@@ -51,7 +57,20 @@ echo "==> Removing EC2_INSTANCE_ID so CI skips build and deploy..."
 gh secret delete EC2_INSTANCE_ID --repo "$REPO" 2>/dev/null || true
 
 echo "==> Destroying infrastructure (env: ${ENV}, about 6 minutes)..."
-terraform destroy -auto-approve -input=false -var-file="environments/${ENV}.tfvars"
+# Not `set -e` for this one line: a destroy that fails (a timeout, a transient network
+# error while Terraform saves state) must not skip the check below. That check is the
+# whole point of this script -- it is what catches a partial teardown -- so it has to run
+# whether or not Terraform thinks it succeeded. Found for real on 7 Oct 2026: a DNS blip
+# mid-destroy ended the script here under `set -e`, and an EC2 instance and a load balancer
+# stayed up, unnoticed, until a manual check found them.
+DESTROY_OK=1
+terraform destroy -auto-approve -input=false -var-file="environments/${ENV}.tfvars" || DESTROY_OK=0
+if [ "$DESTROY_OK" = "0" ]; then
+    echo ""
+    echo "!! terraform destroy reported an error (see above). Checking anyway what is actually left,"
+    echo "   because the state file may no longer match reality. If it ran out of a lock or a network"
+    echo "   error, re-run this script: bash scripts/infra-down.sh --yes"
+fi
 
 echo ""
 echo "==> Checking that nothing which bills by the hour is left in ${REGION}..."

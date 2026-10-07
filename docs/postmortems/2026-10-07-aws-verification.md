@@ -146,6 +146,38 @@ chaos experiments above, each of which caused less than two minutes of partial u
 the VPC, DynamoDB, both Lambdas and the ECR repositories (with the `broken` test tags) all removed; the
 script's own check confirms nothing billable remains.
 
+## Teardown, attempt 1: a DNS blip left the stack half torn down
+
+`terraform destroy` failed partway through with a DNS resolution error reaching S3
+(`dial tcp: lookup ...s3.ap-south-1.amazonaws.com: no such host`), both while waiting
+on the observability instance and again while saving state. A transient local network
+issue, not an AWS fault.
+
+**What that left running:** the application EC2 instance, the load balancer, and one
+unassociated Elastic IP, all still billing. **What it had already removed:** the NAT
+gateway and the observability instance.
+
+**The real bug this exposed:** `scripts/infra-down.sh` has `set -euo pipefail`, so when
+`terraform destroy` exited non-zero, the script stopped immediately -- before reaching
+its own billing check at the end, which exists for exactly this situation. The safety net
+did not run because the thing it was meant to catch was also the thing that disabled it.
+**Fixed:** the check now runs whether or not `terraform destroy` succeeded.
+
+**Recovery, done by hand this time:** the state lock (left held by the failed run) was
+cleared, a fresh `terraform plan` showed the state no longer matched reality, and the
+billable resources were confirmed and removed directly with the AWS CLI (instance
+terminated, load balancer and its target group deleted, the orphaned EIP released --
+it released itself once the load balancer was gone). A second `terraform destroy` then
+cleaned up everything the state file still correctly tracked (41 resources: the VPC,
+security groups, DynamoDB table, both Lambda functions, the ECR repositories). A final
+sweep directly against the AWS API, independent of Terraform, confirmed zero EC2
+instances, NAT gateways, load balancers, Elastic IPs, EBS volumes, non-default VPCs,
+ECR repositories and Lambda functions remained.
+
+**The lesson:** a destroy script's own "did it actually work" check must not depend on
+the destroy having worked. Verification against the provider's API, independent of
+whatever the tool believes, is the only check that catches the tool being wrong.
+
 ## What this changes elsewhere
 
 - README: the "what runs vs. written" table, the numbers, and the known-limits list reflect this run.
