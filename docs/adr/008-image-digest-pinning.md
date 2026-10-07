@@ -1,84 +1,63 @@
-# ADR-008: Container Image Tag Pinning vs Digest Pinning
+# ADR-008: Images Are Pinned by Version Tag, Not by Digest
 
-**Status:** Accepted with documented limitations
+**Status:** Accepted, with the limits stated below
+
+> **Amended 2026-10-07.** The decision stands. Most of the reasoning given for it
+> did not survive being checked against the repository, and has been replaced:
+> ECR tags here are mutable, not immutable; digest updates can be automated;
+> Trivy scans the repository's files, not the images, and would not notice a
+> swapped image in any case; and Docker Content Trust was offered as a control
+> that is not enabled anywhere. Dependabot now covers every image.
+
 **Date:** 2026-05-01
 
 ---
 
 ## Context
 
-Our docker-compose.yml and CI/CD pipeline pull container images. We need to decide how to reference those images: by tag, by tag+digest, or by digest only.
+Every image this project runs is named in one of three places: nine third-party images in `docker-compose.yml` (Prometheus, Grafana, Loki, nginx and so on), one base image in four Dockerfiles (`python:3.11-slim`), and four images of our own that CI builds and the deploy pulls from ECR.
 
-Examples:
-- Tag only: `grafana/grafana:11.4.0`
-- Tag + digest: `grafana/grafana:11.4.0@sha256:a1b2c3...`
-- Digest only: `grafana/grafana@sha256:a1b2c3...`
+An image can be referred to in three ways:
 
-## The Problem With Tags
+| Form | Example | What it guarantees |
+|---|---|---|
+| Floating tag | `grafana/grafana:latest` | Nothing. A different image every time upstream releases |
+| Version tag | `grafana/grafana:13.2.3` | The publisher's intent. They can still push new bytes under the same tag |
+| Digest | `grafana/grafana@sha256:…` | The exact bytes. A digest is a hash of the image, so it cannot be moved |
 
-Docker tags are **mutable**. The publisher can push a new image to the same tag at any time. `grafana/grafana:11.4.0` today and `grafana/grafana:11.4.0` tomorrow could be different bytes.
+A tag is a label that someone can move. That is the entire problem. In March 2025 the GitHub Action `tj-actions/changed-files` was compromised and its existing version tags were pointed at a malicious commit; every pipeline that referred to it by tag ran the attacker's code on its next run, with no change on the victim's side. Container image tags work the same way.
 
-This is the supply chain attack vector: an attacker who compromises the publisher's Docker Hub account can push a malicious image to an existing tag. Every `docker compose pull` on your servers would silently pull the compromised image.
+## Decision
 
-This is not theoretical. The `codecov/codecov-action` supply chain attack (2021) compromised thousands of CI pipelines by injecting malicious code into a dependency. Container images have the same risk profile.
+1. **Third-party images: an exact version tag, never `latest`.** Not a digest.
+2. **Our own images: deployed by the commit-SHA tag** that the pipeline built in the same run.
+3. **Dependabot proposes every upgrade** (compose images, Dockerfile base images, Python packages, GitHub Actions, Terraform providers), grouped into one pull request per ecosystem per month.
+4. **GitHub Actions are pinned to release tags**, never to a branch such as `@master`.
 
-**The attack flow:**
-```
-Attacker compromises DockerHub account for library X
-    ↓
-Pushes malicious image to existing tag (e.g., grafana:11.4.0)
-    ↓
-Our deployment pulls the "latest" image on next restart
-    ↓
-We run attacker-controlled code with full container privileges
-```
+## What this protects against, and what it does not
 
-## What Digest Pinning Does
+**It does protect against** silent drift. Nothing changes version unless a commit changes it, so "what is running" is answerable from git, an upgrade is a reviewable diff, and CI runs against the new version before it is deployed. This was not true before October 2026: nothing watched the compose images, and the monitoring stack was found two major versions behind without a single pull request ever having been opened.
 
-A digest (`sha256:a1b2c3...`) is a cryptographic hash of the exact image contents. It is **immutable** — the same digest will always point to the same bytes, forever, regardless of what the publisher does.
+**It does not protect against** a publisher, or someone who has taken over a publisher's account, re-pushing an existing tag. `prom/prometheus:v3.15.0` would then pull different bytes and nothing here would notice.
 
-```yaml
-# Tag — mutable, pullable tomorrow as different image
-image: grafana/grafana:11.4.0
+**Our own images are not immune either,** and an earlier version of this record said they were. The ECR repositories are `MUTABLE`, because the pipeline moves two tags on every build (`main` and `latest`) alongside the SHA tag. "One SHA tag is one image" is therefore a convention the pipeline follows, not something the registry enforces: anything with push access could overwrite a SHA tag. Enforcing it means `IMMUTABLE` repositories, dropping the moving tags, and making the push idempotent, since re-running a pipeline for the same commit would otherwise fail on a tag that already exists.
 
-# Digest pinned — immutable, always exactly this build
-image: grafana/grafana:11.4.0@sha256:abf4a6219d62b36a5f5b7b35b4c01e5f3c1a...
-```
+**Scanning does not close the gap.** Trivy in CI scans this repository's files (dependency manifests, Dockerfiles, Terraform) and reports to the Security tab without failing the build. ECR scans our four images when they are pushed. Both look for *known vulnerabilities in listed packages*. A deliberately backdoored image has no CVE and would pass both.
 
-## Our Decision
+## Why not digests
 
-We pin by **version tag only** in docker-compose.yml, with the following accepted limitations:
+The honest reason is review cost, not tooling. The tooling exists: Renovate can pin and update digests (`pinDigests`), and Dependabot updates a digest when a reference already carries one.
 
-### Why not full digest pinning here
+What pinning by digest costs is noise. Upstream images are rebuilt under the same version tag whenever their base image gets security patches, so a digest-pinned `nginx:1.30.5-alpine` produces an update pull request with no version change, repeatedly, across nine images. For one maintainer that is a stream of diffs nobody can meaningfully review (a hash changed to another hash), which trains the reviewer to merge without looking. A control that is routinely rubber-stamped is not a control.
 
-1. **Digest maintenance overhead**: Every image update requires looking up the new digest (`docker inspect --format='{{index .RepoDigests 0}}'`). For a solo project with 15+ external images, this adds significant maintenance work on every update.
+So the trade is explicit: accept the residual risk of a re-pushed upstream tag, in exchange for upgrade pull requests that are few enough to actually read.
 
-2. **No clear automation path**: Dependabot and Renovate can update version tags automatically. Digest pinning requires custom tooling or manual updates — there is no standard automated solution that works for all registries.
+## When this decision would change
 
-3. **Our actual images are in ECR**: The 4 images we control (secureship, ragservice, statusservice, llm-alert-autopilot) are pushed to our ECR registry via CI/CD. They are already immutable at the ECR level — once a digest is pushed, it cannot be overwritten because we use commit SHA tags, not `latest`.
-
-4. **Risk profile at our scale**: We are running a demo/portfolio project. The realistic risk is low. The operational burden is high.
-
-### What we do instead
-
-**For our own images (ECR):** We pin by git commit SHA (`secureship:abc1234`), not `:latest`. This is functionally equivalent to digest pinning — each SHA points to exactly one build and cannot be overwritten.
-
-**For external images (Grafana, Prometheus, etc.):** We pin to specific version numbers (`grafana:11.4.0`, not `grafana:latest`). This is not digest pinning but eliminates the most common attack vector (upstream using `latest`).
-
-**Trivy scanning in CI:** We scan all images for known CVEs on every push. A newly compromised image would introduce new vulnerabilities that Trivy would detect on the next CI run.
-
-**Docker Content Trust (DCT) in production:** When deploying on EC2, we can enable `DOCKER_CONTENT_TRUST=1` which forces Docker to verify image signatures. This requires publishers to sign their images (Grafana does; most major publishers do).
-
-## When This Decision Would Change
-
-If this project moves to a regulated environment (banking, healthcare, government) with supply chain requirements, full digest pinning becomes mandatory. The tooling to manage it is:
-
-- **Renovate** with `pinDigests: true` — automatically opens PRs to update digests
-- **Cosign** (Sigstore) — image signing and verification standard, increasingly adopted
-- **SLSA** (Supply Chain Levels for Software Artifacts) — Google's framework, growing adoption
-
-These tools make digest pinning operationally sustainable. We'd adopt them at the point where supply chain compliance is a hard requirement.
+- **Real data or a compliance requirement.** Then: digests for everything, updated by Renovate, plus signature verification (cosign) at deploy time so that the cluster refuses an image that the build did not sign. Docker Content Trust, which an earlier version of this record leaned on, is the older Notary-based mechanism and is being retired in favour of Sigstore; it is not enabled here and should not be relied on.
+- **More than one person with push access to the registry.** Then `IMMUTABLE` tags stop being optional.
+- **A deployment that pulls on its own schedule** (Kubernetes with `imagePullPolicy: Always`). A moved tag then reaches production without any deploy. Here an image is only pulled when `deploy.sh` runs.
 
 ## The Interview Answer
 
-"We pin our own images by git commit SHA in ECR — that's equivalent to digest pinning because SHA tags are immutable. For external images, we pin to specific version numbers rather than `latest`, which eliminates the most common vector. We run Trivy on every build, which catches newly introduced CVEs even if we don't pin by digest. The full digest pinning story is: tags are mutable and a compromised publisher can silently swap your image. Digests are cryptographic hashes — immutable by definition. In production at scale, I'd use Renovate with `pinDigests: true` to automate digest updates and Cosign for image signing verification. We accept the tag-only approach here because the operational burden doesn't justify it for a solo project, and our CI/CD pipeline's Trivy scanning catches the actual risk (CVEs), which is more practical than the theoretical supply chain attack."
+"A tag is a label somebody can move; a digest is a hash of the bytes and cannot be. I pin third-party images to exact version tags and let Dependabot propose upgrades monthly, grouped, so every change of version is a diff I review and CI tests. That stops silent drift, which was my real problem: my monitoring stack had fallen two major versions behind because nothing was watching those images. It does not stop a compromised publisher re-pushing a tag, and I do not pretend it does. I chose not to pin digests because upstream rebuilds would give me a constant stream of hash-to-hash pull requests that I would end up merging blind. And I corrected myself on one point: I used to say my own SHA-tagged images were immutable. They are not; the repositories allow tags to be overwritten because the pipeline moves `latest`. With real data I would use immutable tags, digests through Renovate, and verify signatures at deploy."

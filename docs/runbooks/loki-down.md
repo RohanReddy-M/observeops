@@ -10,7 +10,7 @@
 
 When Loki is down:
 - All LogQL queries in Grafana fail silently (dashboards show "no data")
-- Promtail is buffering logs locally — it will NOT lose them for a short outage
+- Alloy (the log shipper) keeps retrying and remembers how far it has read, so a short outage delays logs instead of losing them
 - LLM Alert Autopilot cannot query logs for diagnosis context
 - **Metrics and alerting still work** — Prometheus is unaffected
 
@@ -123,8 +123,8 @@ sudo docker compose -f /opt/observeops/docker-compose.yml up -d loki
 # Loki is ready
 curl -s http://localhost:3100/ready
 
-# Promtail is shipping logs again
-sudo docker logs promtail --tail=10 2>&1 | grep -i "send\|sent\|flush"
+# Alloy is shipping logs again (no new errors about the push endpoint)
+sudo docker logs alloy --tail=20 2>&1 | grep -i "error" || echo "no errors in the last 20 lines"
 
 # In Grafana — query logs from the last 30 minutes to confirm
 # {job="secureship"} — should show recent entries

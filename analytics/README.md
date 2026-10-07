@@ -1,7 +1,7 @@
 # ObserveOps Log Analytics — a PySpark batch + streaming pipeline
 
 A small data pipeline over ObserveOps's own telemetry: the structured JSON
-logs the services emit (the same lines Promtail ships to Loki) are processed
+logs the services emit (the same lines Alloy ships to Loki) are processed
 with Apache Spark into per-service error rates, p95 latency per endpoint, and
 requests per minute, written as Parquet partitioned by date.
 

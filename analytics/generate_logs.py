@@ -1,7 +1,7 @@
 """Generate sample ObserveOps-style JSON logs for the analytics pipeline.
 
 Mirrors the structured JSON log lines the real services emit (one JSON object
-per line, written to stdout and shipped by Promtail to Loki). Deliberately
+per line, written to stdout and shipped by Alloy to Loki). Deliberately
 injects a few malformed rows and duplicate request_ids so the pipeline's data
 quality gates have something real to catch.
 

@@ -1,7 +1,17 @@
 # ADR-009: Groq (llama-3.1-8b-instant) Over OpenAI / Anthropic / Self-hosted
 
-**Status:** Accepted  
+**Status:** Accepted for the provider. The model named here has been retired by the provider; see ADR-010.  
 **Date:** 2026-05-15
+
+> **Amended 2026-10-07.** The provider choice stands. Read this record with four
+> corrections: (1) `llama-3.1-8b-instant` no longer exists at the provider; the
+> model id is now configuration (ADR-010). (2) The prices, free-tier limits and
+> latency figures below were written from memory in May 2026, were not measured,
+> and some of the arithmetic is wrong; do not quote them. Latency measured in
+> October 2026 on the current default model was 0.5 to 0.7 s per call. (3) "Model
+> quality is equivalent to GPT-4 for this task" was never tested; there is no
+> evaluation set. (4) "instant" in a model name is the provider's label for a
+> small fast model, not a reference to its hardware.
 
 ---
 
@@ -88,4 +98,4 @@ If ObserveOps moved to a regulated environment (bank, hospital, government) wher
 
 ## The Interview Answer
 
-"We chose Groq with llama-3.1-8b-instant over OpenAI GPT-4 for the alert autopilot. The latency was the deciding factor — Groq's LPU hardware gives 200ms inference vs 5 seconds for GPT-4. For a tool whose entire purpose is to compress incident diagnosis time, adding 5 seconds of LLM wait is counterproductive. The cost was also a factor — Groq's free tier covers 50× our alert volume, while GPT-4 would cost $120/month. The model quality trade-off is real but acceptable: llama-3.1-8b reliably produces structured output at temperature=0 for a fixed format. If we moved to a regulated environment where logs contain PII, we'd switch to self-hosted Ollama on a GPU instance — data residency would override the cost and latency advantages of the hosted API."
+"I chose a hosted inference provider with a free tier and sub-second responses, because the autopilot's whole job is to put a first hypothesis next to the alert while the alert is still fresh. A small fast model is enough for that task: read a few log lines, name a likely cause, suggest a first check. I did not measure answer quality against a larger model, so I do not claim they are equal; I claim the small one is adequate, and I treat its output as a hypothesis, because I have watched it confidently blame a harmless startup message. The decision I would defend hardest is the boundary: log lines leave my network for a third party, which is fine for this project and a hard stop where logs can contain personal or regulated data. There the answer is a model hosted inside the account. And the lesson that came later is ADR-010: the model I originally named was retired by the provider and nothing told me."
