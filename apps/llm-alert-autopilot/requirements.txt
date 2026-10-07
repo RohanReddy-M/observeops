@@ -4,6 +4,6 @@
 # reason about and one Dependabot pull request to review.
 fastapi==0.142.2
 uvicorn[standard]==0.54.0
-groq==0.37.1                     # held below 1.0: langchain-groq requires groq<1.0. Both services use one version
+groq==1.7.0                     # held below 1.0: langchain-groq requires groq<1.0. Both services use one version
 httpx==0.28.1
 prometheus-client==0.26.0
