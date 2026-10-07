@@ -7,10 +7,9 @@
 #   make test         run all tests
 #   make deploy       deploy to production
 #   make infra-up     provision AWS infrastructure
-#   make infra-down   destroy AWS infrastructure (keeps Route53)
+#   make infra-down   destroy all AWS infrastructure
 
-.PHONY: help dev-up dev-down dev-restart logs status \
-        test test-secureship test-ragservice \
+.PHONY: help dev-up dev-down dev-restart logs status \n        test-alerts chaos-crash chaos-oom chaos-depkill gameday gameday-hint gameday-reveal \n        test test-secureship test-ragservice \
         build build-secureship build-statusservice build-ragservice \
         deploy rollback \
         infra-up infra-down plan apply \
@@ -37,8 +36,9 @@ help:
 	@echo "    make test-secureship    run SecureShip tests only"
 	@echo "    make test-statusservice run StatusService tests only"
 	@echo "    make test-ragservice    run RAGService tests only"
-	@echo "    make scan               run security scan (Trivy + Bandit)
-    make load-test          run k6 load test, validate SLOs under traffic"
+	@echo "    make test-alerts        unit-test the Prometheus alert rules (promtool)"
+	@echo "    make scan               run security scan (Trivy + Bandit)"
+	@echo "    make load-test          run k6 load test, validate SLOs under traffic"
 	@echo ""
 	@echo "  BUILD"
 	@echo "    make build              build all Docker images"
@@ -52,7 +52,7 @@ help:
 	@echo "    make plan ENV=staging   terraform plan for staging"
 	@echo "    make infra-up           provision production infrastructure"
 	@echo "    make infra-up ENV=staging   provision staging infrastructure"
-	@echo "    make infra-down         destroy production infrastructure, keep Route53"
+	@echo "    make infra-down         destroy ALL production infrastructure (asks first)"
 	@echo "    make infra-down ENV=staging destroy staging infrastructure"
 	@echo ""
 	@echo "  CODE QUALITY"
@@ -62,10 +62,12 @@ help:
 	@echo "    make pre-commit-run     run all hooks against all files"
 	@echo ""
 	@echo "  CHAOS ENGINEERING"
-	@echo "    make chaos               kill secureship, verify alert + recovery"
-	@echo "    make chaos-ragservice    kill ragservice, verify including FAISS index"
-	@echo "    make chaos-oom           simulate OOM kill on ragservice"
+	@echo "    make chaos               kill secureship: is the outage DETECTED in 60-90s?"
+	@echo "    make chaos-ragservice    kill ragservice, and check the vector index after recovery"
+	@echo "    make chaos-crash         crash secureship: does it SELF-HEAL without paging?"
+	@echo "    make chaos-oom           real OOM loop on ragservice (memory limit lowered)"
 	@echo "    make chaos-depkill       kill loki (dependency failure test)"
+	@echo "    make gameday             blind failure injection: diagnose it yourself"
 	@echo "    (all chaos runs generate a postmortem pre-fill in docs/postmortems/)"
 	@echo ""
 	@echo "  UTILITIES"
@@ -79,32 +81,24 @@ dev-up:
 	@echo "==> Checking prerequisites..."
 	@[ -f .env ] || (cp .env.example .env && echo "  .env created — fill in GROQ_API_KEY from console.groq.com")
 	@docker info > /dev/null 2>&1 || (echo "ERROR: Docker is not running" && exit 1)
-	@echo "==> Starting monitoring + tracing stack..."
-	docker compose up -d prometheus grafana loki alertmanager node-exporter tempo otel-collector
-	@echo "==> Waiting 8s for monitoring to initialize..."
-	@sleep 8
-	@echo "==> Starting application services..."
-	docker compose up -d secureship statusservice ragservice
-	@echo "==> Waiting 5s for app services to initialize..."
-	@sleep 5
-	@echo "==> Starting AI alert autopilot + nginx..."
-	docker compose up -d llm-alert-autopilot nginx promtail
+	@echo "==> Starting all 13 services (first run builds the images; allow several minutes)..."
+	docker compose up -d --wait
 	@echo ""
 	@echo "  ✓ Stack running:"
 	@echo "    SecureShip API:       http://localhost:8001/docs"
 	@echo "    StatusService:        http://localhost:8002"
 	@echo "    RAGService:           http://localhost:8003/docs"
 	@echo "    LLM Alert Autopilot:  http://localhost:8080/health"
-	@echo "    Grafana:              http://localhost:3000  (admin / observeops123)"
-	@echo "    Prometheus:           http://localhost:9090"
+	@echo "    Grafana:              http://localhost:3000/grafana/  (admin / observeops123)"
+	@echo "    Prometheus:           http://localhost:9090/prometheus/"
 	@echo "    AlertManager:         http://localhost:9093"
 	@echo "    Via Nginx:            http://localhost"
 	@echo ""
 	@echo "  Dashboards:"
-	@echo "    Services Overview:    http://localhost:3000/d/observeops-services"
-	@echo "    SLO + Error Budget:   http://localhost:3000/d/observeops-slo"
-	@echo "    DORA Metrics:         http://localhost:3000/d/observeops-dora"
-	@echo "    LLM Metrics:          http://localhost:3000/d/observeops-llm"
+	@echo "    Services Overview:    http://localhost:3000/grafana/d/observeops-services"
+	@echo "    SLO + Error Budget:   http://localhost:3000/grafana/d/observeops-slo"
+	@echo "    DORA Metrics:         http://localhost:3000/grafana/d/observeops-dora"
+	@echo "    LLM Metrics:          http://localhost:3000/grafana/d/observeops-llm"
 	@echo ""
 
 dev-down:
@@ -134,8 +128,16 @@ status:
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
 
-test: test-secureship test-statusservice test-ragservice
+test: test-secureship test-statusservice test-ragservice test-alerts
 	@echo "==> All tests passed."
+
+# Alert and recording rules are code, so they are tested like code: promtool feeds
+# synthetic series into the real rule files and asserts which alerts fire and when.
+test-alerts:
+	@echo "==> Validating and unit-testing Prometheus rules + AlertManager config..."
+	docker run --rm -v "$(CURDIR)/monitoring/prometheus:/rules" --entrypoint promtool prom/prometheus:v3.15.0 check rules /rules/alerts.yml /rules/slo-rules.yml
+	docker run --rm -v "$(CURDIR)/monitoring/prometheus:/rules" --entrypoint promtool prom/prometheus:v3.15.0 test rules /rules/tests/alerts_test.yml
+	docker run --rm -v "$(CURDIR)/monitoring/alertmanager:/am" --entrypoint amtool prom/alertmanager:v0.34.1 check-config /am/alertmanager.yml
 
 test-secureship:
 	@echo "==> Running SecureShip tests..."
@@ -225,7 +227,7 @@ infra-up:
 	ENV=$(ENV) bash scripts/infra-up.sh
 
 infra-down:
-	@echo "==> Destroying infrastructure ($(ENV), keeping Route53)..."
+	@echo "==> Destroying infrastructure ($(ENV))..."
 	ENV=$(ENV) bash scripts/infra-down.sh
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
@@ -264,15 +266,30 @@ load-test:
 # Run ONLY when the full stack is up (make dev-up first).
 
 chaos:
-	@echo "==> Chaos: kill secureship, verify alert + API recovery..."
+	@echo "==> Chaos: kill secureship and time the alerting pipeline..."
 	bash scripts/chaos.sh secureship
+
+chaos-crash:
+	@echo "==> Chaos: crash secureship and check it heals itself without paging..."
+	bash scripts/chaos.sh secureship --scenario=crash
+
+# Blind failure injection for practice: something is broken, you are told only the
+# symptom, and you diagnose it. Then: make gameday-reveal
+gameday:
+	python scripts/gameday.py start
+
+gameday-hint:
+	python scripts/gameday.py hint
+
+gameday-reveal:
+	python scripts/gameday.py reveal
 
 chaos-ragservice:
 	@echo "==> Chaos: kill ragservice, verify alert + FAISS index recovery..."
 	bash scripts/chaos.sh ragservice
 
 chaos-oom:
-	@echo "==> Chaos: simulate OOM kill on ragservice..."
+	@echo "==> Chaos: real OOM loop on ragservice (memory limit lowered, then restored)..."
 	bash scripts/chaos.sh ragservice --scenario=oom
 
 chaos-depkill:

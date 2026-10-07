@@ -28,17 +28,24 @@ groups:
           runbook_url: "https://github.com/RohanReddy-M/observeops/blob/main/docs/runbooks/service-down.md"
 
       - alert: ContainerRestartingFrequently
-        # Requires kube-state-metrics deployed in the cluster.
-        # Deploy: helm install kube-state-metrics prometheus-community/kube-state-metrics -n monitoring
-        # kube_pod_container_status_restarts_total tracks cumulative restarts per container.
-        # increase() over 15m catches CrashLoopBackOff before Kubernetes gives up.
-        expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
+        # process_start_time_seconds is exported by every Python service's /metrics
+        # (prometheus_client's default process collector) and changes exactly when
+        # the process restarts, so changes() over a window counts restarts.
+        #
+        # This rule used to query kube_pod_container_status_restarts_total, a
+        # kube-state-metrics series that does not exist in this Docker Compose
+        # deployment. It could never fire: it looked like coverage and was none.
+        #
+        # It complements ServiceDown rather than duplicating it. A container that
+        # never stays up long enough to be scraped shows as up == 0; one that comes
+        # up, serves briefly and dies again is what this catches.
+        expr: changes(process_start_time_seconds{job=~"secureship|statusservice|ragservice|llm-alert-autopilot"}[15m]) >= 3
         for: 0m
         labels:
           severity: critical
         annotations:
-          summary: "Pod {{ $labels.pod }} container {{ $labels.container }} restarting"
-          description: "Container restarted {{ $value }} times in 15 minutes. Check logs: kubectl logs {{ $labels.pod }} -n {{ $labels.namespace }} --previous"
+          summary: "{{ $labels.job }} restarted {{ $value }} times in 15 minutes"
+          description: "{{ $labels.job }} is restart-looping. Read the logs of the container that died, not the one running now: docker logs --tail 100 {{ $labels.job }}, and check 'docker inspect {{ $labels.job }}' for OOMKilled and the exit code."
 
   # ─── Error Rate Alerts ─────────────────────────────────────────────────────
   - name: error_rates
@@ -49,11 +56,16 @@ groups:
         # 1. Gets the rate of 5xx requests per second over 5 minutes
         # 2. Divides by total request rate to get a percentage
         # 3. Fires if error rate > 5%
+        #
+        # Both sides MUST be aggregated to the same labels before dividing. Written
+        # as a bare rate() / rate(), PromQL matches series on identical label sets,
+        # so each 5xx series was divided by itself: the result was 100% whenever a
+        # single 5xx existed and the threshold was meaningless.
         expr: |
           (
-            rate(http_requests_total{status_code=~"5.."}[5m])
+            sum by (job) (rate(http_requests_total{status_code=~"5.."}[5m]))
             /
-            rate(http_requests_total[5m])
+            sum by (job) (rate(http_requests_total[5m]))
           ) * 100 > 5
         for: 2m
         labels:
@@ -65,9 +77,9 @@ groups:
       - alert: CriticalErrorRate
         expr: |
           (
-            rate(http_requests_total{status_code=~"5.."}[5m])
+            sum by (job) (rate(http_requests_total{status_code=~"5.."}[5m]))
             /
-            rate(http_requests_total[5m])
+            sum by (job) (rate(http_requests_total[5m]))
           ) * 100 > 25
         for: 1m
         labels:
@@ -81,9 +93,9 @@ groups:
         # Separate alert covers the /fail endpoint simulated errors.
         expr: |
           (
-            rate(status_requests_total{status="500"}[5m])
+            sum by (job) (rate(status_requests_total{status="500"}[5m]))
             /
-            rate(status_requests_total[5m])
+            sum by (job) (rate(status_requests_total[5m]))
           ) * 100 > 5
         for: 2m
         labels:
@@ -100,9 +112,12 @@ groups:
         # histogram_quantile calculates the 99th percentile latency
         # p99 > 2 seconds means 1% of requests take more than 2 seconds
         # This catches slow queries, memory pressure, etc.
+        # Buckets are summed per service first. Without the sum, this computed a
+        # separate p99 for every method and endpoint, so one rarely-hit slow route
+        # could page for the whole service.
         expr: |
           histogram_quantile(0.99,
-            rate(http_request_duration_seconds_bucket[5m])
+            sum by (le, job) (rate(http_request_duration_seconds_bucket[5m]))
           ) > 2
         for: 3m
         labels:
@@ -121,13 +136,13 @@ groups:
         expr: |
           (
             1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))
-            by (instance)
+            by (instance, host)
           ) * 100 > 80
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High CPU usage on {{ $labels.instance }}"
+          summary: "High CPU usage on {{ $labels.host }}"
           description: "CPU usage is {{ $value | humanize }}%. Run 'top' on the instance to identify the consuming process."
 
       - alert: HighMemoryUsage
@@ -144,7 +159,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Low memory on {{ $labels.instance }}"
+          summary: "Low memory on {{ $labels.host }}"
           description: "Only {{ $value | humanize }}% memory available. Check for memory leaks: docker stats"
 
       - alert: DiskSpaceLow
@@ -159,7 +174,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Low disk space on {{ $labels.instance }}"
+          summary: "Low disk space on {{ $labels.host }}"
           description: "Disk is {{ $value | humanize }}% free. Clean up logs or old Docker images: docker system prune"
 
       - alert: DiskSpaceCritical
@@ -173,7 +188,7 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "CRITICAL disk space on {{ $labels.instance }}"
+          summary: "CRITICAL disk space on {{ $labels.host }}"
           description: "Disk is almost full. Immediate action required or services will crash."
 
   # ─── LLM / RAG Alerts ─────────────────────────────────────────────────────
@@ -185,11 +200,12 @@ groups:
       - alert: LLMHighErrorRate
         # If more than 10% of LLM API calls are failing, something is wrong.
         # Common causes: Groq API key expired, rate limit hit, network issue.
+        # Aggregated before dividing, for the same reason as HighErrorRate above.
         expr: |
           (
-            rate(llm_requests_total{status="error"}[5m])
+            sum by (job) (rate(llm_requests_total{status="error"}[5m]))
             /
-            rate(llm_requests_total[5m])
+            sum by (job) (rate(llm_requests_total[5m]))
           ) * 100 > 10
         for: 2m
         labels:
@@ -212,15 +228,30 @@ groups:
           summary: "High LLM response latency (p95 > 15s)"
           description: "95th percentile LLM latency is {{ $value | humanizeDuration }}. Groq may be throttling requests."
 
+      - alert: AutopilotDiagnosisFailing
+        # The autopilot turns alerts into a diagnosis in Slack. When its LLM call
+        # fails, the alert itself still reaches Slack through the plain route, so
+        # nothing looks broken: the diagnosis is simply missing. That is how the
+        # model this service called could be retired by the provider and stay
+        # unnoticed. Any diagnosis error in the window is worth a warning, because
+        # in normal operation there are none.
+        expr: sum by (job) (increase(autopilot_diagnosis_errors_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM alert diagnosis is failing ({{ $value | humanize }} errors in 15m)"
+          description: "llm-alert-autopilot received alerts but could not diagnose them. Alerts are still delivered, without a diagnosis. Check: docker logs --tail 50 llm-alert-autopilot. Common causes: the GROQ_MODEL no longer exists at the provider, the API key was revoked, or Loki is unreachable."
+
       - alert: RAGHighUngroundedRate
         # If more than 50% of answers are not grounded in retrieved context,
         # the knowledge base is too sparse — need to ingest more documents.
         # This is a MODEL QUALITY alert, not an infrastructure alert.
         expr: |
           (
-            rate(rag_queries_total{grounded="false"}[10m])
+            sum by (job) (rate(rag_queries_total{grounded="false"}[10m]))
             /
-            rate(rag_queries_total[10m])
+            sum by (job) (rate(rag_queries_total[10m]))
           ) * 100 > 50
         for: 5m
         labels:

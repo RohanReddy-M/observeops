@@ -113,9 +113,33 @@ jobs:
       - name: Run RAGService tests
         run: pytest apps/ragservice/tests/ -v
 
-      - name: Run RAG quality evaluation harness
-        run: python apps/ragservice/eval.py
-        continue-on-error: true
+      # The autopilot's MTTR depends on parsing AlertManager timestamps. The module
+      # under test has no dependencies, so it needs nothing installed.
+      - name: Run LLM Alert Autopilot tests
+        run: pytest apps/llm-alert-autopilot/tests/ -v
+
+      # Alert and recording rules are code, so they get tests. promtool feeds
+      # synthetic series into the real rule files and asserts which alerts fire
+      # and when (monitoring/prometheus/tests/alerts_test.yml). This is what would
+      # have caught three error-rate alerts that divided every series by itself.
+      - name: Validate and unit-test Prometheus rules
+        run: |
+          docker run --rm -v "$PWD/monitoring/prometheus:/rules" --entrypoint promtool \
+            prom/prometheus:v3.15.0 check rules /rules/alerts.yml /rules/slo-rules.yml
+          docker run --rm -v "$PWD/monitoring/prometheus:/rules" --entrypoint promtool \
+            prom/prometheus:v3.15.0 test rules /rules/tests/alerts_test.yml
+
+      - name: Validate AlertManager config
+        run: |
+          docker run --rm -v "$PWD/monitoring/alertmanager:/am" --entrypoint amtool \
+            prom/alertmanager:v0.34.1 check-config /am/alertmanager.yml
+
+      # There is deliberately no "RAG answer quality" step here. apps/ragservice/eval.py
+      # scores answers from a LIVE service, and CI has none: the step that used to
+      # run it skipped all five cases and printed PASS. What can be gated
+      # deterministically is retrieval and the grounding check, which the RAGService
+      # tests above cover (tests/test_retrieval.py). eval.py is run against a
+      # deployed stack instead; see the README.
 
 
   # ─── Job 2: Security Scan ───────────────────────────────────────────────────
@@ -410,12 +434,12 @@ jobs:
       contents: read
       id-token: write
 
-    # Environment with required reviewer approval
-    # In GitHub: Settings → Environments → Create "production" → Add reviewer
-    # This means someone must approve before the deployment runs
+    # A GitHub "environment" groups deployments and can require approval before
+    # this job runs (Settings → Environments → production → Required reviewers).
+    # No protection rule is configured on it for this single-maintainer project,
+    # so pushes to main deploy without a manual gate.
     environment:
       name: production
-      url: https://secureship.click
 
     steps:
       - name: Checkout code
@@ -499,24 +523,6 @@ jobs:
           done
           echo "❌ Deploy timed out after 8 minutes"
           exit 1
-
-      # Post deployment annotation to Grafana
-      # This adds a vertical line on all dashboards showing exactly when we deployed
-      # Makes it easy to correlate issues with deployments
-      - name: Add Grafana deployment annotation
-        if: success()
-        continue-on-error: true
-        env:
-          GRAFANA_URL: ${{ secrets.GRAFANA_URL }}
-          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
-        run: |
-          curl -s -X POST "$GRAFANA_URL/api/annotations" \
-            -H "Authorization: Bearer $GRAFANA_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"text\": \"Deploy: ${{ github.sha }} by ${{ github.actor }}\",
-              \"tags\": [\"deployment\", \"production\"]
-            }"
 
       # Notify success
       - name: Deployment success notification
