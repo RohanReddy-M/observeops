@@ -1,416 +1,221 @@
 # ObserveOps
 
-> Production systems fail. The average team spends **45 minutes** diagnosing before they start fixing.  
-> ObserveOps cuts that to **~3 seconds** — AlertManager detects the failure, Loki pulls the last 50 log lines, an LLM finds the root cause, and Slack gets the fix command. No human involved.
+An operations platform I built to learn how a production system fails and how it gets watched.
+Four small services sit behind nginx. A monitoring stack runs on a second server. Alerts reach Slack
+with a first diagnosis written from the service's own logs. Deploys use short-lived AWS credentials,
+check each service's health, and roll back by themselves when a check fails.
 
-[![CI/CD](https://github.com/RohanReddy-M/observeops/actions/workflows/deploy.yml/badge.svg)](https://github.com/RohanReddy-M/observeops/actions/workflows/deploy.yml)
-
-Cloud platform built end-to-end on AWS — Terraform IaC, Kubernetes + ArgoCD GitOps, GitHub Actions CI/CD with OIDC, Prometheus + Grafana + Loki observability, LangGraph RAG agent, SLOs with error budgets, chaos engineering, and DORA metrics.
-
-Live at **[secureship.click](https://secureship.click)** · [Run locally in 2 minutes](#running-locally) without an AWS account.
-
----
-
-## See it in action
-
-**AI autopilot: ServiceDown alert → LLM root cause → Slack in ~3 seconds**
-
-![AI Autopilot Slack Alert](docs/screenshots/slack-autopilot.png)
-
-**Grafana dashboards: SLO/Error Budget · DORA Metrics**
-
-![SLO and Error Budget Dashboard](docs/screenshots/grafana-slo.jpeg)
-
-![DORA Metrics Dashboard](docs/screenshots/grafana-dora.jpeg)
+**Status, 7 October 2026.** It runs locally with Docker Compose. It was deployed to AWS on 7 October 2026,
+tested there, and torn down. Nothing is running publicly now. The results are in
+[docs/postmortems/2026-10-07-aws-verification.md](docs/postmortems/2026-10-07-aws-verification.md).
+The domain the project used, secureship.click, expired on 1 October 2026. The stack does not need a domain.
 
 ---
 
-## By the numbers
+## What runs, and what is only written
 
-| | |
-|---|---|
-| **~3 seconds** | alert fires → Slack diagnosis (AI autopilot) |
-| **~30 seconds** | CloudTrail security event → Slack notification (Lambda) |
-| **15 alert rules** | across 5 groups including LLM quality monitoring |
-| **5 Grafana dashboards** | Services, SLO/Error Budget, DORA Metrics, LLM Ops, Infrastructure |
-| **9 ADRs** | every major design decision documented with tradeoffs |
-| **3 services** | FastAPI + Flask + LangGraph RAG, all containerised |
-| **2 EC2 instances** | app and observability separated by design |
-| **1 Lambda** | CloudTrail security events → AI diagnosis → SNS |
+Every row says where its evidence is. "Verified on AWS" means it was exercised on the real stack on 7 October 2026.
 
----
-
-## What makes this different from a standard monitoring project
-
-- **LLM Alert Autopilot** — every alert is automatically diagnosed using real Loki logs + deployment history. Root cause and fix command posted to Slack in ~3 seconds, before a human opens their laptop
-- **SLOs with 30-day error budgets** and burn rate alerting (14.4× multiplier from Google SRE Workbook — deploys block when budget burns too fast)
-- **Chaos engineering that catches zombie recovery** — after an OOM kill the service restarts and the health check passes, but the in-memory FAISS index is empty and all queries return nothing. Basic uptime monitoring misses this. Caught by checking `vector_store_documents_total` after recovery
-- **DORA metrics tracked automatically** — deployment frequency, MTTR from resolved alerts, AI diagnosis success rate
-- **Deadman switch** — Watchdog alert proves the alerting pipeline itself is alive, not just the services it monitors
-- **9 Architecture Decision Records** documenting every major design choice with alternatives considered and rejected
+| Part | State | Evidence |
+|---|---|---|
+| SecureShip API (FastAPI, DynamoDB) | Runs locally and on AWS | 38 tests. On AWS: no key → 401, right key → 200 |
+| StatusService (Flask) | Runs locally and on AWS | 7 tests. Used as the failure injector for chaos tests |
+| RAGService (LangGraph, FAISS, Groq) | Runs locally and on AWS | 42 tests, including retrieval against the real embedding model. Answers come from the runbooks, or the service says it has no context |
+| LLM alert autopilot | Runs locally and on AWS | 12 tests. Reads the service's logs from Loki, asks a model, posts to Slack. Its output is a hypothesis, not a verified diagnosis |
+| nginx front door | Runs locally and on AWS | Routes, rate limits, and the internal-only ingest route checked by hand |
+| Prometheus, AlertManager, Grafana (5 dashboards), Loki, Tempo, Grafana Alloy, OpenTelemetry Collector | Runs locally and on AWS | 13 of 13 scrape targets up, on both hosts |
+| 22 alert rules and 8 recording rules | Run | Unit tests with `promtool` in CI, including a case that must not fire |
+| Alert routing | Runs | Routing decisions tested with `amtool` in CI |
+| Chaos test: kill a service | Verified on AWS | Alert firing 74 s after the kill. Stages are measured, not estimated |
+| Game days (10 scenarios) | Run locally | Each scenario injects its fault and restores the stack (run 7 Oct 2026) |
+| Automatic rollback | Verified on AWS | A broken release is detected by its health check and rolled back to the last healthy image |
+| Audit alerter (Lambda) | Verified on AWS | A security-group change reached Slack about four seconds after the API call |
+| Outside-in probe (Lambda) | Deployed on AWS, armed after the first deploy | Requests the public URL every five minutes from outside the VPC |
+| Deadman switch (`Watchdog`) | Routing is in place and tested. **The external heartbeat is not configured**, so the ping goes nowhere until its URL is stored in SSM | `monitoring/alertmanager/alertmanager.yml` |
+| Terraform (75 resources) | Plan and apply ran on AWS | `terraform/`. State in S3 with a lock file |
+| CI/CD (GitHub Actions, OIDC) | Ran on AWS: build, deploy, smoke tests | `.github/workflows/deploy.yml` |
+| Kubernetes manifests | Written. Not applied to any cluster | `kubernetes/` |
+| EKS cluster definition | Written. Never created | `kubernetes/eks/cluster.yaml` |
 
 ---
 
 ## Architecture
 
 ```
-Internet
-    │
-    ▼
-Route53 (secureship.click) ── A alias record → ALB
-    │
-    ▼
-ALB  (public subnet)
-    │  port 80  → redirect to 443
-    │  port 443 → forward (ACM certificate, TLS terminated here)
-    │
-    │  /api/*      → secureship    :8001  (FastAPI + DynamoDB)
-    │  /status/*   → statusservice :8002  (Flask, failure simulation)
-    │  /ai/*       → ragservice    :8003  (LangGraph RAG agent)
-    │  /grafana/*  → obs server    :3000
-    │
-    ▼  private subnets (no public IPs — only ALB can reach these)
-    │
-    ├── EC2: App Server
-    │       nginx                 reverse proxy, rate limiting, JSON access logs
-    │       secureship            FastAPI, DynamoDB-backed ships API, rate limiting
-    │       statusservice         Flask, /load and /fail endpoints for drill testing
-    │       ragservice            LangGraph + FAISS + Groq, anti-hallucination RAG
-    │       llm-alert-autopilot   AlertManager webhook receiver → LLM diagnosis → Slack
-    │       otel-collector        receives traces from apps, forwards to Tempo
-    │       promtail              ships container logs to Loki
-    │
-    └── EC2: Observability Server  (separate host — by design)
-            prometheus      scrapes all services every 15s, evaluates SLO recording rules
-            grafana         4 dashboards: services, SLO/error budget, DORA, LLM ops
-            loki            log aggregation
-            alertmanager    routes alerts → llm-autopilot → Slack (critical/warning)
-            grafana-tempo   distributed trace storage
-            node-exporter   host-level metrics (CPU, memory, disk, network)
+                      internet
+                          |
+              Application Load Balancer (HTTP, two public subnets)
+                          |
+  ======== application server (private subnet 10.0.3.0/24) ========
+  |  nginx :80 ---- /api/, /health ---> SecureShip :8001 --> DynamoDB |
+  |            ---- /status/, /fail ---> StatusService :8002          |
+  |            ---- /ai/ -------------> RAGService :8003 (FAISS, Groq)  |
+  |  alert autopilot :8080  <- AlertManager webhook; reads Loki; asks Groq; posts to Slack
+  |  OpenTelemetry Collector -> traces;  Grafana Alloy -> logs;  node-exporter
+  ==================================================================
+                          ^ scrapes, alerts, logs, traces
+  ======== observability server (private subnet 10.0.4.0/24) ======
+  |  Prometheus :9090 (35 days) · AlertManager :9093 · Grafana :3000 |
+  |  Loki :3100 · Tempo :3200 · node-exporter                         |
+  ==================================================================
 
-Alert pipeline:
-    Prometheus threshold breached
-        → AlertManager fires
-            → llm-alert-autopilot (Loki log query + deploy context + Groq LLM)
-                → Slack diagnosis in ~3 seconds (root cause + fix command)
-            → also POST to Lambda Function URL (deeper incident analysis)
-                → Lambda calls RAGService → diagnosis published to SNS
-
-    Watchdog alert (always fires every 15s)
-        → watchdog-sink receiver (deadman switch)
-            → healthchecks.io ping — if pings stop, alerting pipeline is dead
-                        → email / Slack / PagerDuty subscribers
+  Outside the VPC:  Lambda outside-in probe (every five minutes)
+                    Lambda audit alerter (CloudTrail events Terraform did not cause -> Slack)
+  AWS services:     ECR (four images) · SSM Parameter Store (secrets) · S3 (state) · CloudTrail
 ```
 
-**Why two EC2 instances?** When a service has a problem — high CPU, memory leak, disk full — that's exactly when you need monitoring to work. If Prometheus and Grafana share a host with the app, the CPU spike you're trying to diagnose is also degrading your ability to diagnose it. Separate hosts eliminate that coupling.
+The reasoning for each part is in [docs/adr/](docs/adr/). Start with
+[ADR-001](docs/adr/001-two-server-architecture.md) (why two servers) and
+[ADR-013](docs/adr/013-access-is-scoped-to-roles.md) (access and what is still open).
 
 ---
 
-## AI Layer
+## Run it locally
 
-### RAGService — LangGraph RAG agent with hallucination fallback
-
-Standard RAG: embed a query, retrieve similar documents, pass to LLM. The problem is that LLMs generate confidently even when retrieved documents are irrelevant — which is worse than saying "I don't know."
-
-The solution is a grading node in the LangGraph pipeline that measures cosine similarity between the query vector and retrieved document vectors before passing to the LLM:
-
-```
-query → retrieve (FAISS, top-4) → grade relevance
-                                        │
-                        cosine_sim > threshold → generate (LLM answers)
-                        cosine_sim ≤ threshold → no_context (honest refusal)
-```
-
-FAISS returns squared L2 distance. For unit-norm vectors: `d² = 2*(1 - cosine_sim)`. Threshold of `d² < 1.5` maps to `cosine_sim > 0.25` — meaningfully related. Off-topic queries get: *"I don't have enough context — use POST /ingest to add relevant runbooks."*
-
-**LLM:** Groq `llama-3.1-8b-instant` — ~200 tokens/sec, free tier, provider-agnostic wrapper so swapping to GPT-4 or Gemini is one line.
-
-**Embeddings:** `all-MiniLM-L6-v2` — 80 MB, CPU-only, cached in the Docker image layer so container starts instantly even without a GPU.
-
-### Lambda Incident Analyzer
-
-AlertManager sends a webhook to a Lambda Function URL on every firing alert. Lambda calls RAGService with the alert context and publishes the diagnosis to SNS. Runs on a 5-minute EventBridge schedule for proactive health checks too.
-
-**Why Lambda Function URL instead of API Gateway?** API Gateway adds cost, latency, and configuration overhead for a single webhook endpoint. Function URLs give you a direct HTTPS endpoint for Lambda at zero cost and zero operational overhead.
-
-**Security:** Every webhook is validated using HMAC shared secret with `hmac.compare_digest` (constant-time comparison, prevents timing attacks). The secret is generated by Terraform, stored in SSM as a SecureString, and injected via environment variable — never in code or git history.
-
----
-
-## Observability
-
-**15 alert rules** across 5 groups — not just infrastructure, but AI quality:
-
-| Group | Examples |
-|---|---|
-| Service availability | `ServiceDown`, `ContainerRestartingFrequently` |
-| Error rates | `HighErrorRate` (>5%), `CriticalErrorRate` (>25%) |
-| Latency | `HighLatency` (p99 > 2s) |
-| Infrastructure | `HighCPUUsage`, `HighMemoryUsage`, `DiskSpaceLow`, `DiskSpaceCritical` |
-| LLM quality | `LLMHighErrorRate`, `LLMHighLatency`, `RAGHighUngroundedRate`, `RAGServiceDown`, `LokiDown` |
-
-`RAGHighUngroundedRate` is a model quality alert — if more than 50% of answers are not grounded in retrieved context, the knowledge base is too sparse and needs more documents ingested. This is LLMOps monitoring, not just infrastructure monitoring.
-
-**5 custom Prometheus metrics** in RAGService (`llmops.py`):
-- `llm_request_duration_seconds` — histogram by model and operation
-- `llm_requests_total` — counter by model and status
-- `rag_queries_total` — counter by grounded/ungrounded
-- `rag_documents_retrieved` — histogram of retrieval count per query
-- `vector_store_documents_total` — gauge showing knowledge base size
-
-**RAG quality evaluation harness** (`apps/ragservice/eval.py`) — 5 test cases with keyword scoring. Exits non-zero on quality regression. Runs as a CI gate on every push so prompt changes or document updates that break answer quality are caught before production.
-
----
-
-## Infrastructure (`terraform/`)
-
-Everything is Terraform. `make infra-up` brings up the full stack from scratch. `make infra-down` destroys expensive resources (EC2, ALB, NAT Gateway) and stops billing — Route53 zone is kept to avoid DNS propagation issues on rebuild.
-
-```
-modules/
-├── vpc/        VPC, public/private subnets, IGW, NAT Gateway, route tables
-├── security/   security groups (ALB → EC2 only, admin SSH by IP)
-├── compute/    EC2 instances, IAM roles, SSM Parameter Store access
-├── alb/        ALB, ACM certificate, DNS validation records, Route53 A record
-├── dynamodb/   ships table, PAY_PER_REQUEST, point-in-time recovery
-└── lambda/     incident analyzer, Function URL, SQS DLQ, EventBridge rule, SNS
-```
-
-Key security decisions:
-- **IMDSv2 enforced** on all EC2 — blocks SSRF attacks that steal IAM credentials via the metadata endpoint
-- **Private subnets** — EC2 has no public IP, unreachable directly from the internet
-- **Least-privilege IAM** — EC2 role can only read its own SSM parameters and its own DynamoDB table
-- **SQS Dead Letter Queue** on Lambda — failed alert processing is never silently dropped
-- **`reserved_concurrent_executions` removed** — new AWS accounts have a concurrency limit of 10; DLQ handles retry instead
-
----
-
-## CI/CD (`.github/workflows/deploy.yml`)
-
-```
-push → main/develop
-    │
-    ├── test          pytest (SecureShip + StatusService + RAGService) + Docker build smoke test
-    │                 RAG quality eval harness
-    │
-    ├── security-scan  Trivy: CVE scan on all files
-    │   (parallel)     Bandit: Python SAST (injection, hardcoded secrets, insecure functions)
-    │                  TruffleHog: git history scan for accidentally committed secrets
-    │
-    ├── terraform-lint terraform fmt -recursive + tfsec static analysis
-    │   (parallel)     accepted deviations documented in .tfsec/config.yml
-    │
-    ├── check-aws      gates build+deploy on whether infra is running
-    │                  (checks EC2_INSTANCE_ID + AWS_ROLE_ARN + ECR_REGISTRY secrets)
-    │
-    ├── build-push     builds 3 images, pushes to ECR with git SHA tag
-    │                  cache-from: latest to keep build times fast
-    │
-    ├── update-k8s     commits new image tags into kubernetes/apps/ manifests
-    │                  ArgoCD detects the diff and syncs the cluster
-    │
-    └── deploy         SSM Run Command → deploy.sh on EC2
-                       rolling deploy (secureship → statusservice → ragservice)
-                       smoke tests 7 endpoints
-                       auto-rollback to previous image if any smoke test fails
-```
-
-**Why SSM instead of SSH?** EC2 is in a private subnet with no inbound port 22 open. SSM Session Manager reaches the instance through the AWS control plane — no VPN, no bastion host, no open ports. The attack surface is smaller and there are no SSH keys to rotate or lose.
-
-**Why OIDC instead of stored AWS keys?** GitHub Actions OIDC issues a short-lived STS token (1 hour) per run. Static keys are permanent until manually rotated — if leaked, they're valid indefinitely. OIDC tokens expire automatically.
-
----
-
-## Security model
-
-| Layer | What it does |
-|---|---|
-| Route53 | DNS only — no compute exposure |
-| ACM | TLS terminated at ALB — EC2 never handles raw TLS |
-| ALB security group | Inbound 80/443 from `0.0.0.0/0` only — nothing else |
-| EC2 security group | Inbound from ALB security group only — no direct internet access |
-| IMDSv2 | Requires session token — blocks SSRF credential theft |
-| IAM role | Least privilege — scoped to `/observeops/*` SSM params and `observeops-*` DynamoDB tables |
-| SSM Parameter Store | Secrets encrypted at rest with KMS — never in code, git, or user data |
-| Webhook HMAC | `hmac.compare_digest` constant-time comparison — prevents timing attacks |
-| Non-root containers | All containers run as `appuser` (UID 1001) — exploit gets no sudo |
-| Trivy + Bandit + TruffleHog | CVE scanning, SAST, and secret scanning on every push |
-
----
-
-## Reliability Engineering
-
-### Service Level Objectives
-
-Four SLOs defined and tracked in Grafana with 30-day error budgets:
-
-| Service | SLO | Error Budget | Alert |
-|---|---|---|---|
-| SecureShip availability | 99.5% | 216 min/month | `SecureShipSLOBreach` |
-| SecureShip p99 latency | < 500ms | — | `HighLatency` |
-| RAGService success rate | 95% | — | `RAGServiceSuccessSLOBreach` |
-| RAGService grounded rate | 50% | — | `RAGHighUngroundedRate` |
-
-**Error budget burn rate alerting:** `SecureShipBurnRateTooHigh` fires when the 1-hour burn rate exceeds 14.4× the allowed pace — meaning the monthly budget will be exhausted in ~50 hours. At this threshold, deploys are blocked until reliability recovers. The 14.4 multiplier comes from Google's SRE Workbook multi-window burn rate model.
-
-`RAGIndexEmpty` fires when RAGService is running but the FAISS knowledge base has zero documents — a "zombie recovery" state discovered during chaos experiments where the service appeared healthy but answered nothing.
-
-### Chaos Engineering
+You need Docker Desktop and Git Bash (on Windows) or a Unix shell. Python 3.11 is needed only for the tests.
 
 ```bash
-make chaos          # kill secureship → verify alert fires + API recovery
-make chaos-oom      # simulate memory exhaustion on ragservice
-make chaos-depkill  # kill loki → test graceful degradation
+cp .env.example .env              # put your Groq key in GROQ_API_KEY (free at console.groq.com)
+docker compose up -d --wait       # about two minutes the first time: images are built
 ```
 
-Each run:
-1. Injects the failure
-2. Verifies `ServiceDown` alert fires in AlertManager (target: <90 seconds)
-3. Verifies container auto-restarts (restart: unless-stopped)
-4. **End-to-end functional verification** — not just "container is running" but actual API call + FAISS document count check
-5. Auto-generates a postmortem pre-fill in `docs/postmortems/`
-
-**The zombie recovery problem:** After an OOM kill, the container restarts and the health check passes — but the in-memory FAISS index is empty. All queries return "I don't have enough context." Basic uptime monitoring misses this entirely. The chaos script catches it by checking `vector_store_documents_total` after recovery. A completed postmortem from this discovery is in `docs/postmortems/2026-05-31-chaos-ragservice-oom.md`.
-
-### DORA Metrics
-
-`deploy.sh` registers every deployment with the LLM Alert Autopilot via `POST /deploy-event`. AlertManager resolved-alerts provide MTTR. Grafana DORA dashboard shows:
-
-- **Deployment frequency** — deploys per 7/30 days
-- **MTTR** — p50 and p95 recovery time from Prometheus histogram
-- **AI diagnosis success rate** — fraction of alerts successfully diagnosed by LLM
-
-When an alert fires, the LLM diagnosis includes: *"High error rate started 8 minutes after commit `abc1234` deployed by Rohan"* — deploy context is automatically included so root cause correlation is immediate.
-
-### Architecture Decision Records
-
-Nine ADRs in `docs/adr/` document the reasoning behind every major design decision:
-
-| ADR | Decision |
-|---|---|
-| 001 | Two-server architecture (app vs observability) |
-| 002 | SSM Session Manager instead of SSH |
-| 003 | DynamoDB instead of RDS |
-| 004 | OIDC instead of IAM access keys for CI/CD |
-| 005 | RAG with grounding check instead of raw LLM |
-| 006 | Prometheus + Grafana instead of Datadog/New Relic |
-| 007 | Deadman switch (Watchdog alert pattern) |
-| 008 | Container image pinning strategy and supply chain tradeoffs |
-| 009 | Groq (llama-3.1-8b-instant) instead of OpenAI / Claude / self-hosted Ollama |
-
----
-
-## At scale, this breaks
-
-Knowing the limits of your own architecture is what separates engineering from wishful thinking. Every system has a ceiling — here's exactly where ObserveOps hits its.
-
-**Prometheus pull model — breaks at ~500 scrape targets**  
-Prometheus scrapes each target sequentially in a 15-second interval. At ~500 services the scrape loop barely completes before it starts again. Fix: [Prometheus federation](https://prometheus.io/docs/prometheus/latest/federation/) (shard scraping across multiple Prometheus instances), or migrate the high-cardinality metrics to VictoriaMetrics which handles 1M+ time series on equivalent hardware.
-
-**Single AlertManager — no high availability**  
-One AlertManager is a SPOF. If it crashes during a major incident, alerts stop routing — the moment you need diagnosis the most. Fix: AlertManager cluster (minimum 3 nodes with gossip protocol for state synchronisation). Accepted here because the monitoring server itself fails rarely, and MTTR for monitoring infrastructure is ~5 minutes via `terraform apply`. Acceptable for a project portfolio; not for production SLA.
-
-**LLM autopilot thundering herd**  
-If 20 alerts fire simultaneously (cascade failure scenario), the autopilot fires 20 parallel Groq API calls. At Groq's free tier rate limits (14,400 req/day, ~30 req/minute burst), sustained alert storms trigger rate limiting — you get no LLM diagnosis during a cascade, which is precisely when you need it most. Fix: add a queue with deduplication and back-pressure. AlertManager's `group_wait` + `group_by` absorbs some of this, but alert bursts still hit the rate limit. At scale: a Redis queue consuming the webhook events, with exponential backoff and a circuit breaker on the Groq client.
-
-**Loki on EC2 root volume**  
-Logs are stored on the observability server's EBS volume. When disk fills, Loki stops writing new logs — silently. No logs means the autopilot LLM diagnosis degrades to "no recent logs found" for every alert. Fix: Loki with [S3 backend](https://grafana.com/docs/loki/latest/configure/storage/) for object storage. The configuration change is ~10 lines; not implemented because S3 costs money and this project runs on a budget.
-
-**In-memory deploy history**  
-`_recent_deploys` in `llm-alert-autopilot/main.py` lives in the container's memory. Container restart = lost deploy history = LLM cannot correlate "high error rate started 8 minutes after deploy" for the first hour after restart. Fix: persist to Redis or DynamoDB with a TTL. The failure window is short and the consequence is degraded (not broken) diagnosis, so it's acceptable at this scale.
-
-**FAISS vector store is ephemeral**  
-RAGService's FAISS index is in-memory. OOM kill = index gone. The health check passes before re-indexing completes — the zombie state our chaos engineering was designed to catch. Fix: persist the FAISS index to S3 on write and reload on startup, or replace with a proper vector database (Pinecone, Weaviate, pgvector on RDS). Not implemented because this is a demo knowledge base, not a production runbook store.
-
----
-
-## Running locally
-
-```bash
-cp .env.example .env   # add GROQ_API_KEY (free at console.groq.com)
-make dev-up            # starts all services in correct order
-
-# Services
-# SecureShip:          http://localhost:8001/docs
-# StatusService:       http://localhost:8002
-# RAGService:          http://localhost:8003/docs
-# LLM Alert Autopilot: http://localhost:8080/health
-# Grafana:             http://localhost:3000  →  admin / observeops123
-# Prometheus:          http://localhost:9090
-# AlertManager:        http://localhost:9093
-#
-# Dashboards:
-#   Services Overview:  http://localhost:3000/d/observeops-services
-#   SLO + Error Budget: http://localhost:3000/d/observeops-slo
-#   DORA Metrics:       http://localhost:3000/d/observeops-dora
-#   LLM Ops:            http://localhost:3000/d/observeops-llm
-
-# Ingest a runbook into RAGService
-curl -X POST http://localhost:8003/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"texts": ["When CPU is high, run: top -b -n1 | head -20 to identify the process. Then: docker stats to see container usage."]}'
-
-# Query the RAG agent (direct to service; use /ai/query when going through nginx/ALB)
-curl -X POST http://localhost:8003/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "CPU is spiking on the app server, what do I do?"}'
-
-# Trigger a failure drill
-curl -X POST "http://localhost:8002/fail?error_rate=0.5"
-
-# Run tests
-pytest apps/secureship/tests/ -v
-pytest apps/ragservice/tests/ -v
-python apps/ragservice/eval.py   # RAG quality score
-```
-
-SecureShip falls back to in-memory data when `DYNAMODB_TABLE` is not set — no AWS account needed for local development.
-
----
-
-## AWS deployment
-
-```bash
-# Prerequisites: AWS CLI configured, Terraform installed, SSH key at ~/.ssh/id_rsa.pub
-# Set your IP: MY_IP=$(curl -s ifconfig.me)
-# terraform/terraform.tfvars → admin_cidr = "$MY_IP/32"
-
-make infra-up    # ~10 minutes: Terraform + EC2 bootstrap + CI/CD deploy
-make infra-down  # stops billing (keeps Route53 zone — ~₹42/month idle)
-```
-
-**Cost when idle:** Route53 hosted zone ~$0.50/month. Everything else is zero — EC2, ALB, NAT Gateway, Lambda, DynamoDB all stopped or pay-per-request.
-
-**Cost when running:** Two `t3.small` EC2 (~$30/month), one NAT Gateway (~$35/month), ALB (~$20/month). Spin up for demos, tear down after.
-
----
-
-## Cost (FinOps)
-
-Infrastructure is torn down when not in use. When running, the full stack costs:
-
-| Resource | Type | Cost/month |
+| Where | URL | Login |
 |---|---|---|
-| EC2 App Server | t3.small | ~$15 |
-| EC2 Observability Server | t3.small | ~$15 |
-| ALB | per LCU | ~$20 |
-| NAT Gateway | per GB | ~$35 |
-| DynamoDB | on-demand | ~$1 |
-| Route53 | hosted zone | ~$0.50 |
-| ECR | image storage | ~$1 |
-| Lambda | free tier | ~$0 |
-| **Total** | | **~$87/month** |
+| nginx, the front door | http://localhost/ | none |
+| SecureShip API | http://localhost:8001/api/v1/ships | none locally (no key configured) |
+| RAG service | http://localhost:8003/health | none |
+| Prometheus | http://localhost:9090/prometheus/ | none |
+| AlertManager | http://localhost:9093 | none |
+| Grafana | http://localhost:3000/grafana/ | `admin` / `observeops123` (local default only) |
+| Grafana Alloy (log shipper) | http://localhost:9080/graph | none |
 
-Cost optimisation decisions made:
-- **t3.small over t3.medium** — sufficient for demo traffic, saves $30/month
-- **On-demand DynamoDB over provisioned** — traffic is too unpredictable to reserve capacity cost-effectively at this scale
-- **Infra torn down when idle** — NAT Gateway is the dominant cost driver; destroying it when not needed saves ~$35/month
-- **Spot instances in K8s manifests** — EKS node group uses spot for 60-70% cost reduction
+Stop it with `docker compose down`. The local stack uses a few gigabytes of memory.
+
+There is no required `make` step on Windows: every Makefile target is a plain command you can copy.
 
 ---
 
-## Note on live demo
+## Tests and checks
 
-**secureship.click is live on-demand.** AWS infrastructure (EC2, ALB, NAT Gateway) is torn down when not in use to avoid ~$87/month in idle costs. Run `make infra-up` to provision from scratch in ~10 minutes, or run `make dev-up` locally — no AWS account required (DynamoDB falls back to in-memory, Groq API key is the only requirement).
+| What | Command |
+|---|---|
+| SecureShip | `pytest apps/secureship/tests -q` |
+| StatusService | `pytest apps/statusservice/tests -q` |
+| RAG service (downloads an 80 MB model the first time) | `pytest apps/ragservice/tests -q` |
+| Alert autopilot | `pytest apps/llm-alert-autopilot/tests -q` |
+| Lambda handlers | `pytest apps/lambda/tests -q` |
+| Alert rules, as CI runs them | `docker run --rm -v "$PWD/monitoring/prometheus:/rules" --entrypoint promtool prom/prometheus:v3.15.0 test rules /rules/tests/alerts_test.yml` |
+| Compose file | `docker compose config --quiet` |
+| Kill a service and time the alert | `bash scripts/chaos.sh secureship` (with the stack running) |
+| Crash a service and check it heals | `bash scripts/chaos.sh secureship --scenario=crash` |
+| Diagnose a failure you were not told about | `python scripts/gameday.py start`, then `hint`, `reveal` or `abort` |
 
-To request a live demo: open an issue on this repo or reach out directly.
+The alert-timing script, [scripts/alert_timeline.py](scripts/alert_timeline.py), reports each stage of an
+alert against Prometheus's own record. The chaos script writes a postmortem template with the measured timeline.
+
+---
+
+## Deploy to AWS
+
+This costs about **$0.15 an hour** while it is up. Nothing bills while it is down.
+
+1. **Once per account:** `bash scripts/bootstrap-aws-account.sh`. It creates the state bucket, the GitHub identity
+   provider, the CI role (which only `main` and the `production` environment may assume), a CloudTrail trail,
+   and the GitHub environment rule.
+2. **Secrets in Parameter Store** (you create these; the script lists what is missing):
+   `groq_api_key`, `slack_webhook_critical`, `slack_webhook_warnings`. Everything else is generated by Terraform.
+3. **Bring it up:** `bash scripts/infra-up.sh`. It applies Terraform, waits for both servers to finish booting,
+   runs the pipeline, and arms the outside-in probe. About 25 minutes.
+4. **Take it down:** `bash scripts/infra-down.sh --yes`. About six minutes. It ends by checking that nothing that
+   bills by the hour is left.
+
+A domain is optional. Set `domain_name` in `terraform/environments/production.tfvars` and see
+[ADR-011](docs/adr/011-one-configuration-everywhere.md). Without one the site is served over HTTP on the load
+balancer's own address.
+
+---
+
+## Numbers
+
+| | |
+|---|---|
+| Alert rules | 22 in 8 groups, plus 8 recording rules |
+| Grafana dashboards | 5 |
+| Automated tests | 109 (SecureShip 38, RAG 42, autopilot 12, Lambda 10, StatusService 7), plus alert-rule and routing tests in CI |
+| Terraform resources | 75 (no-domain mode) |
+| Architecture decision records | 13 |
+| Runbooks | 9. The RAG service answers questions from these same files |
+| SLO | SecureShip availability 99.5% over 30 days (error budget 216 minutes); RAG success 95% |
+| Measured detection | A killed service's alert is firing 74 s later (scrape failed +5 s, pending +14 s, firing +74 s) |
+
+---
+
+## Security, in short
+
+Access is granted per role, to named ports or resources. There is no SSH anywhere: administration uses Session
+Manager, which opens no inbound port. Secrets are generated or stored in Parameter Store and read at start-up.
+The CI role uses OIDC, so no AWS keys are stored in GitHub. [ADR-013](docs/adr/013-access-is-scoped-to-roles.md)
+lists what is still wide, and that list is the honest part.
+
+---
+
+## Known limits
+
+- One instance per role, and one NAT gateway in one zone. If the NAT gateway fails, both servers lose outbound access.
+- Outbound traffic from both servers is not restricted.
+- Prometheus is readable from the internet at `/prometheus/`. Its admin endpoints are blocked.
+- StatusService's `/fail` and `/load` are public. They exist to cause errors and load.
+- One API key is shared by all clients, with no rotation procedure.
+- The log shipper mounts the Docker socket, which is root on that host.
+- IAM events are not reported: IAM is a global service, and its events reach EventBridge only in us-east-1.
+- The deadman switch needs its external URL before it does anything.
+- Nothing alerts when log ingestion stops. The shipper's own counters show it, but no rule watches them yet.
+- The RAG index is in memory and rebuilt from the runbooks at start-up. The grounding threshold was set by hand,
+  and answer quality is not measured against a labelled set.
+- The DynamoDB list endpoint reads the whole table. Fine for a small table; the fix is an index and a query.
+- The AWS table is empty. The sample ships exist only in local mode.
+- The autopilot's diagnosis is a model's hypothesis. It has been seen to name a harmless message as the cause.
+
+---
+
+## Decisions
+
+| # | Decision |
+|---|---|
+| [001](docs/adr/001-two-server-architecture.md) | Monitoring on a separate server from what it monitors |
+| [002](docs/adr/002-ssm-over-ssh.md) | Session Manager instead of SSH |
+| [003](docs/adr/003-dynamodb-over-rds.md) | DynamoDB for a key-value registry |
+| [004](docs/adr/004-oidc-over-iam-keys.md) | OIDC for CI, no stored AWS keys |
+| [005](docs/adr/005-rag-with-grounding-check.md) | RAG with a grounding check that refuses to answer |
+| [006](docs/adr/006-prometheus-over-managed-monitoring.md) | Self-hosted Prometheus, Grafana, Loki |
+| [007](docs/adr/007-deadman-switch.md) | A deadman switch for the alerting pipeline |
+| [008](docs/adr/008-image-digest-pinning.md) | Version tags for images, and why not digests |
+| [009](docs/adr/009-llm-provider-groq.md) | A hosted model provider (the model it named has since been retired) |
+| [010](docs/adr/010-llm-model-is-configuration.md) | The model name is configuration |
+| [011](docs/adr/011-one-configuration-everywhere.md) | One configuration for laptop and AWS; no domain required |
+| [012](docs/adr/012-test-the-monitoring.md) | The monitoring is code, so it is tested and measured |
+| [013](docs/adr/013-access-is-scoped-to-roles.md) | Access is scoped to roles, named ports and resources |
+
+---
+
+## Repository layout
+
+```
+apps/            the four services and the Lambda functions, each with its own tests
+monitoring/      Prometheus rules and tests, AlertManager, Alloy, Grafana, Loki, Tempo, OpenTelemetry
+terraform/       the AWS stack: network, security groups, compute, load balancer, DynamoDB, Lambda, ECR
+kubernetes/      manifests, an EKS cluster definition and an Argo CD layout: written, not applied
+scripts/         deploy, bring-up and teardown, account baseline, chaos, game days, timing
+docs/adr/        thirteen decision records
+docs/runbooks/   nine runbooks, which the RAG service answers from
+docs/postmortems/ measured experiments and what they showed
+analytics/       a small PySpark batch and streaming example, run locally
+```
+
+---
+
+## A note on honesty
+
+Everything marked "verified on AWS" was run on the stack on 7 October 2026, and its output is in the
+postmortem. Everything marked "written" has never run in the way its file describes. Where a number here
+came from a measurement, the measurement is named. Where it came from a design, it is called a design.

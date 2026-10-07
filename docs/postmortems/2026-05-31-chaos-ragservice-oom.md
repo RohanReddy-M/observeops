@@ -6,6 +6,14 @@
 **Severity:** SEV-2 (AI assistant unavailable, core API unaffected)
 **Status:** Closed — all action items resolved
 
+> **Correction, 2026-10-07.** The timing in this postmortem is wrong. The `ServiceDown` rule has `for: 1m`, so it
+> cannot fire 42 seconds after a failure; the 42 s figure was not produced by that rule and should not be quoted.
+> The alert pipeline has since been measured stage by stage on AWS: a killed service is scraped as failed at about
+> +5 s, pending at +14 s, and firing at +74 s, with AlertManager holding it at the same moment. The notification follows
+> the 30 s `group_wait`. The statements below that rely on 42 s are retained as written, for the record, and are
+> superseded by that measurement. The rest of this postmortem (the empty index that passed its health check, and the
+> autopilot's diagnosis) was not affected.
+
 ---
 
 ## What We Tested

@@ -6,7 +6,7 @@ Cloud Engineer — I design and operate cloud infrastructure end-to-end, from Te
 
 ## ObserveOps
 
-**[github.com/RohanReddy-M/observeops](https://github.com/RohanReddy-M/observeops)** · live at [secureship.click](https://secureship.click)
+**[github.com/RohanReddy-M/observeops](https://github.com/RohanReddy-M/observeops)** · the live demo ran on AWS in October 2026; it is torn down between demonstrations
 
 Production-grade cloud platform on AWS with automated incident response. When a service fails:
 
