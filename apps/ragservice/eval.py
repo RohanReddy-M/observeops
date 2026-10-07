@@ -2,14 +2,24 @@
 """
 RAG Quality Evaluation Harness
 -------------------------------
-Runs 5 representative queries against a live RAGService instance and scores
-each answer for keyword coverage.  Exits non-zero if any test case scores
-below the threshold — used as a CI gate so prompt or document changes that
-regress answer quality are caught before they reach production.
+Runs 5 representative queries against a LIVE RAGService and scores each answer
+for keyword coverage.
+
+It needs a running service with documents ingested and a working LLM key, so it
+is run against a deployed stack (or a local `make dev-up`), not in CI. The
+deterministic part of answer quality - does retrieval find the right runbook,
+does the grounding check reject off-topic questions - is covered by
+tests/test_retrieval.py, which does run in CI.
+
+Exit codes:
+    0  every case was evaluated and met the threshold
+    1  at least one evaluated case scored below the threshold
+    2  nothing, or not everything, could be evaluated: NOT a pass
 
 Usage:
-    python eval.py                         # expects RAGService at localhost:8003
+    python eval.py                                 # service on localhost:8003
     RAGSERVICE_URL=http://host:8003 python eval.py
+    RAGSERVICE_URL=http://host/ai python eval.py   # through nginx
 """
 
 import json
@@ -54,7 +64,10 @@ TEST_CASES = [
 def query_ragservice(question: str) -> dict:
     payload = json.dumps({"question": question}).encode()
     req = urllib.request.Request(
-        f"{BASE_URL}/ai/query",
+        # BASE_URL is the service root: http://host:8003 directly, or http://host/ai
+        # through nginx, which strips the /ai prefix. This used to append /ai/query
+        # to a direct :8003 address, a path the service does not have.
+        f"{BASE_URL.rstrip('/')}/query",
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -69,9 +82,10 @@ def score_answer(answer: str, keywords: list[str]) -> tuple[float, list[str]]:
     return len(matched) / len(keywords), matched
 
 
-def run_eval() -> bool:
+def run_eval() -> int:
     print(f"RAG Quality Evaluation — {BASE_URL}\n{'=' * 50}")
     all_passed = True
+    evaluated = 0
 
     for tc in TEST_CASES:
         print(f"\n[{tc['name']}]")
@@ -80,9 +94,9 @@ def run_eval() -> bool:
         try:
             result = query_ragservice(tc["question"])
         except urllib.error.URLError as e:
-            print(f"  ERROR: Could not reach RAGService — {e}")
-            print("  Skipping (service not running — ingest documents first)")
+            print(f"  NOT EVALUATED: could not reach RAGService — {e}")
             continue
+        evaluated += 1
 
         answer = result.get("answer", "")
         is_relevant = result.get("is_relevant", False)
@@ -99,15 +113,23 @@ def run_eval() -> bool:
             print(f"  Answer preview      : {answer[:200]}")
 
     print(f"\n{'=' * 50}")
-    if all_passed:
-        print("OVERALL: PASS — all test cases met quality threshold")
-    else:
+    print(f"Evaluated {evaluated} of {len(TEST_CASES)} cases")
+    # A run that evaluated nothing must never be reported as a pass. It used to:
+    # unreachable cases were skipped, all_passed stayed True, and the harness
+    # printed PASS having checked nothing.
+    if evaluated == 0:
+        print("OVERALL: NOT EVALUATED — no case could reach the service")
+        return 2
+    if not all_passed:
         print("OVERALL: FAIL — one or more test cases below quality threshold")
         print("Action: ingest more runbooks via POST /ingest, or review prompt in rag_pipeline.py")
-
-    return all_passed
+        return 1
+    if evaluated < len(TEST_CASES):
+        print("OVERALL: INCOMPLETE — some cases could not be evaluated")
+        return 2
+    print("OVERALL: PASS — all test cases met quality threshold")
+    return 0
 
 
 if __name__ == "__main__":
-    passed = run_eval()
-    sys.exit(0 if passed else 1)
+    sys.exit(run_eval())

@@ -1,5 +1,9 @@
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
-groq==0.12.0
-httpx<0.27.0
-prometheus-client==0.21.0
+# Pinned to the same versions as the other services, and verified against the
+# running container on 2026-10-07. This file used to pin groq 0.12.0 with
+# httpx<0.27.0; one set of versions across all four services means one thing to
+# reason about and one Dependabot pull request to review.
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
+groq==0.37.1
+httpx==0.28.1
+prometheus-client==0.26.0

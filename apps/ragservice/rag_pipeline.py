@@ -15,6 +15,12 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+# The model id is configuration, not code. It was hardcoded until the provider
+# retired "llama-3.1-8b-instant"; see the note in llm-alert-autopilot/main.py.
+GROQ_MODEL = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
+# "low" keeps a reasoning model fast and is accepted by non-reasoning ones.
+GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "low")
+
 # Circuit breaker for the Groq API.
 # Opens after 5 consecutive failures — subsequent calls fail immediately
 # instead of queuing up retries and keeping FastAPI workers blocked.
@@ -32,7 +38,11 @@ _groq_breaker = pybreaker.CircuitBreaker(
 )
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+# langchain-community is being sunset upstream. The embeddings class has already
+# moved to langchain-huggingface (above). The FAISS wrapper is the one thing still
+# imported from it; the planned replacement is to call faiss directly, which
+# tests/test_retrieval.py makes safe to do because it pins retrieval behaviour.
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -49,6 +59,8 @@ class GraphState(TypedDict):
     scores: List[float]   # FAISS L2 distances — lower means more similar
     generation: str
     is_relevant: bool
+    llm_called: bool      # False on the no_context path: no LLM request was made
+    llm_ok: bool          # False when the call failed and a degraded answer was returned
 
 
 class RAGPipeline:
@@ -69,14 +81,15 @@ class RAGPipeline:
         )
         self.vector_store: FAISS | None = None
 
-        # llama-3.1-8b-instant: free on Groq, ~200 tokens/sec, good reasoning.
         # timeout=15: if Groq doesn't respond in 15s, raise immediately rather than
         # hanging a FastAPI worker thread. Caller handles the timeout exception.
+        llm_options = {"reasoning_effort": GROQ_REASONING_EFFORT} if GROQ_REASONING_EFFORT else {}
         self.llm = ChatGroq(
-            model="llama-3.1-8b-instant",
+            model=GROQ_MODEL,
             temperature=0,
             api_key=os.getenv("GROQ_API_KEY"),
             timeout=15,
+            **llm_options,
         )
         self.graph = self._build_graph()
 
@@ -159,9 +172,11 @@ class RAGPipeline:
             ),
             ("human", "Context:\n{context}\n\nQuestion: {query}"),
         ])
+        llm_ok = True
         try:
             answer = _groq_breaker.call(self._call_llm, prompt, context, state["query"])
         except pybreaker.CircuitBreakerError:
+            llm_ok = False
             # Circuit is open — Groq has failed 5+ times in 60s.
             # Fail fast: tell the caller and let the circuit recover.
             logger.warning("Groq circuit breaker open — returning degraded response")
@@ -171,17 +186,25 @@ class RAGPipeline:
                 "Check Groq quota at console.groq.com or run: docker logs ragservice"
             )
         except Exception as exc:
+            llm_ok = False
             logger.error("LLM call failed after retries: %s", exc)
             answer = (
                 f"LLM unavailable after 3 attempts ({exc}). "
                 "Run manually: sudo docker compose -f /opt/observeops/docker-compose.yml ps"
             )
-        return {**state, "generation": answer}
+        # The caller still gets a readable answer either way, which is right for the
+        # user. But a degraded answer must not be COUNTED as a success: llm_ok is how
+        # main.py knows to record it as an error. Without it this path returned a
+        # normal-looking result, the error-rate metric stayed at zero, and the LLM
+        # could be completely unavailable while LLMHighErrorRate never fired.
+        return {**state, "generation": answer, "llm_called": True, "llm_ok": llm_ok}
 
     def _no_context(self, state: GraphState) -> GraphState:
         """Fallback node: tell the user we lack context rather than hallucinate."""
         return {
             **state,
+            "llm_called": False,
+            "llm_ok": True,
             "generation": (
                 "I don't have enough context in my knowledge base to answer this. "
                 "Use POST /ingest to add relevant runbooks or incident logs first."
@@ -224,11 +247,14 @@ class RAGPipeline:
             raise ValueError("No documents ingested. POST to /ingest first.")
 
         result = self.graph.invoke(
-            {"query": question, "documents": [], "scores": [], "generation": "", "is_relevant": False}
+            {"query": question, "documents": [], "scores": [], "generation": "",
+             "is_relevant": False, "llm_called": False, "llm_ok": True}
         )
         return {
             "answer": result["generation"],
             "is_relevant": result["is_relevant"],
+            "llm_called": result.get("llm_called", False),
+            "llm_ok": result.get("llm_ok", True),
             # Truncate source content so the API response stays readable
             "sources": [
                 {"content": d.page_content[:200], "metadata": d.metadata}

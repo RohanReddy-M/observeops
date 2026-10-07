@@ -20,7 +20,7 @@ from llmops import (
     rag_queries_total,
     vector_store_documents,
 )
-from rag_pipeline import RAGPipeline
+from rag_pipeline import GROQ_MODEL, RAGPipeline
 
 # ── Structured JSON logging ────────────────────────────────────────────────────
 # Same format as secureship so Loki can parse all services identically
@@ -116,7 +116,7 @@ SEED_DOCUMENTS = [
             "Documents are embedded with sentence-transformers all-MiniLM-L6-v2 (free, CPU). "
             "Vectors stored in FAISS (in-memory, no database needed). "
             "LangGraph agent flow: retrieve → grade relevance → generate (or fallback). "
-            "LLM: Groq llama-3.1-8b-instant (free tier, ~200 tokens/sec). "
+            "LLM: a Groq-hosted model chosen by the GROQ_MODEL setting. "
             "All LLM calls are tracked via Prometheus metrics in llmops.py."
         ),
         "metadata": {"type": "infrastructure", "category": "ragservice"},
@@ -259,15 +259,22 @@ def query(request: QueryRequest):
     if len(request.question) > 1000:
         raise HTTPException(status_code=400, detail="question exceeds 1000 character limit")
 
-    model = "llama-3.1-8b-instant"
+    model = GROQ_MODEL
     start = time.time()
     try:
         result = pipeline.query(request.question)
         duration = time.time() - start
 
         # ── Record LLMOps metrics ──────────────────────────────────────────
-        llm_request_duration.labels(model=model, operation="rag_query").observe(duration)
-        llm_requests_total.labels(model=model, status="success").inc()
+        # llm_requests_total counts LLM calls, so it is only touched when one was
+        # made, and a call that failed is an error even though the user still got a
+        # (degraded) answer back with a 200. Counting every query as a success made
+        # the RAG success-rate SLO read 100% with the model completely unavailable.
+        if result.get("llm_called"):
+            llm_request_duration.labels(model=model, operation="rag_query").observe(duration)
+            llm_requests_total.labels(
+                model=model, status="success" if result.get("llm_ok", True) else "error"
+            ).inc()
         rag_queries_total.labels(grounded=str(result["is_relevant"]).lower()).inc()
         rag_documents_retrieved.observe(len(result["sources"]))
 

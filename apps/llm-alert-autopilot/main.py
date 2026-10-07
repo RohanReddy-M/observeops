@@ -39,6 +39,7 @@ from typing import Any
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.responses import JSONResponse
 from groq import Groq
+from timeutil import parse_rfc3339
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
@@ -56,9 +57,20 @@ SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL", "")
 LOKI_URL      = os.getenv("LOKI_URL", "http://loki:3100")
 GRAFANA_URL   = os.getenv("GRAFANA_URL", "http://grafana:3000")
 GRAFANA_PASS  = os.getenv("GRAFANA_PASSWORD", "observeops123")
-LLM_MODEL     = "llama-3.1-8b-instant"
+# The model id is configuration, not code. It was hardcoded to
+# "llama-3.1-8b-instant" until the provider retired that model: every diagnosis
+# then failed with a 404, nothing alerted on it, and the fix needed a code change
+# and an image rebuild. A hosted model name is a dependency with a deprecation
+# schedule you do not control, so it belongs in the environment.
+LLM_MODEL     = os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
+# Reasoning models spend completion tokens thinking before they answer. At the
+# default effort gpt-oss-20b used the entire token budget on reasoning and
+# returned a truncated 7-character "answer". "low" is plenty for a short triage
+# summary and is accepted by the non-reasoning models too. Empty = do not send it.
+LLM_REASONING = os.getenv("GROQ_REASONING_EFFORT", "low")
+LLM_MAX_TOKENS = 800
 LOG_LINES     = 30
-LOKI_LOOKBACK = "5m"
+LOKI_LOOKBACK_SECONDS = 300
 LLM_TIMEOUT   = 15
 
 # Graceful degradation: container starts even without GROQ key.
@@ -117,23 +129,37 @@ class DeployEvent(BaseModel):
 # ─── Loki log fetching ────────────────────────────────────────────────────────
 
 def _fetch_loki_logs(service: str) -> list[str]:
-    """Fetch recent error-level logs from Loki for a service."""
-    query = f'{{job="{service}"}} |~ "(?i)(error|exception|traceback|critical|oom|killed)"'
+    """Fetch recent error-level logs from Loki for a service.
+
+    Two things here were wrong before, and together they meant this function had
+    never returned a log line:
+
+    - The selector was {job="<service>"}. promtail labels every container's logs
+      with job="docker" and puts the container name in `container`, so that
+      selector matched no stream at all.
+    - `start` was the string "now-5m". Loki's HTTP API takes a Unix timestamp (or
+      RFC 3339) there and answered 400 Bad Request, which was logged as a warning
+      and treated as "no logs".
+    """
+    query = f'{{container="{service}"}} |~ "(?i)(error|exception|traceback|critical|oom|killed)"'
+    now_ns = time.time_ns()
     params = urllib.parse.urlencode({
         "query": query,
         "limit": LOG_LINES,
-        "start": f"now-{LOKI_LOOKBACK}",
+        "start": now_ns - LOKI_LOOKBACK_SECONDS * 1_000_000_000,
+        "end": now_ns,
+        "direction": "backward",
     })
     url = f"{LOKI_URL}/loki/api/v1/query_range?{params}"
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
-        lines = []
+        entries = []
         for stream in data.get("data", {}).get("result", []):
-            for _, line in stream.get("values", []):
-                lines.append(line)
-        return lines[-LOG_LINES:]
+            entries.extend(stream.get("values", []))
+        entries.sort(key=lambda e: int(e[0]))          # oldest first, across streams
+        return [line for _, line in entries][-LOG_LINES:]
     except Exception as exc:
         logger.warning("Loki query failed for service=%s: %s", service, exc)
         return []
@@ -219,6 +245,7 @@ RECENT DEPLOYMENTS (check if alert correlates with a deploy):
 RECENT ERROR LOGS from Loki ({len(log_lines)} lines):
 {log_block}
 """
+    extra = {"reasoning_effort": LLM_REASONING} if LLM_REASONING else {}
     response = groq_client.chat.completions.create(
         model=LLM_MODEL,
         messages=[
@@ -226,10 +253,22 @@ RECENT ERROR LOGS from Loki ({len(log_lines)} lines):
             {"role": "user",   "content": user_content},
         ],
         temperature=0,
-        max_tokens=350,
+        max_tokens=LLM_MAX_TOKENS,
         timeout=LLM_TIMEOUT,
+        extra_body=extra,
     )
-    return response.choices[0].message.content.strip()
+    choice = response.choices[0]
+    content = (choice.message.content or "").strip()
+    # A response cut off by the token limit, or with no content at all, is a failed
+    # diagnosis. Raising makes it count in autopilot_diagnosis_errors_total (and so
+    # reach the AutopilotDiagnosisFailing alert) instead of posting half a sentence
+    # to the on-call channel as though it were an answer.
+    if not content or choice.finish_reason == "length":
+        raise RuntimeError(
+            f"LLM returned an unusable answer (finish_reason={choice.finish_reason}, "
+            f"{len(content)} chars) from model {LLM_MODEL}"
+        )
+    return content
 
 
 # ─── Slack notification ───────────────────────────────────────────────────────
@@ -265,7 +304,7 @@ def _send_slack(alertname: str, severity: str, diagnosis: str,
             "color": color,
             "title": f"{emoji} AI Diagnosis: {alertname}",
             "fields": fields,
-            "footer": "ObserveOps LLM Alert Autopilot  |  Groq llama-3.1-8b-instant",
+            "footer": f"ObserveOps LLM Alert Autopilot  |  Groq {LLM_MODEL}",
         }]
     }
     data = json.dumps(payload).encode()
@@ -292,10 +331,8 @@ def _record_mttr(alert: dict):
     if not starts_at or not ends_at:
         return
     try:
-        # AlertManager timestamps are ISO 8601 with Z suffix
-        fmt = "%Y-%m-%dT%H:%M:%S.%fZ"
-        start_dt = datetime.strptime(starts_at[:26] + "Z", fmt)
-        end_dt   = datetime.strptime(ends_at[:26] + "Z", fmt)
+        start_dt = parse_rfc3339(starts_at)
+        end_dt   = parse_rfc3339(ends_at)
         mttr = (end_dt - start_dt).total_seconds()
         if 0 < mttr < 86400:  # sanity check: between 0 and 24 hours
             alert_mttr_seconds.labels(alertname=alertname).observe(mttr)
