@@ -17,6 +17,13 @@
 # that safely means auditing every reference, not a one-line change.
 set -eo pipefail
 
+# The script rolls itself back by running itself with --rollback. Name the file by an
+# absolute path and run it through bash. "$0" was not enough: started as
+# `bash scripts/deploy.sh`, it is the relative path scripts/deploy.sh, and the file was
+# not executable in git, so the call failed with 'Permission denied' (126) after the
+# script had already said "Initiating automatic rollback". The broken release stayed up.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 # These are set as environment variables in production
 # Locally you can set them before running the script
@@ -137,7 +144,7 @@ if [ "$1" == "--rollback" ]; then
     # the full image string alone is a no-op, compose never reads it. Split
     # PREVIOUS_IMAGE ("<registry>/secureship:<tag>") back into the two vars compose
     # actually uses, and re-invoking this same script with them set (e.g. via
-    # `"$0" --rollback` from a failed health check below, or from CI on --rollback)
+    # `bash "$SELF" --rollback` from a failed health check below, or from CI on --rollback)
     # deploys the exact previous image, not whatever IMAGE_TAG happened to be
     # inherited from the failed run's environment.
     export IMAGE_TAG="${PREVIOUS_IMAGE##*:}"
@@ -269,7 +276,7 @@ if [ $RETRIES -eq $MAX_RETRIES ]; then
     log_warning "Initiating automatic rollback..."
 
     if [ -f "$ROLLBACK_FILE" ]; then
-        "$0" --rollback
+        bash "$SELF" --rollback || { log_error "The rollback did not restore service. Manual intervention required."; exit 2; }
     else
         log_error "No rollback version available. Manual intervention required."
     fi
@@ -310,7 +317,7 @@ if [ "$RAG_HEALTHY" = false ]; then
     log_error "RAGService failed to become healthy after 180 seconds"
     log_warning "Initiating automatic rollback..."
     if [ -f "$ROLLBACK_FILE" ]; then
-        "$0" --rollback
+        bash "$SELF" --rollback || { log_error "The rollback did not restore service. Manual intervention required."; exit 2; }
     else
         log_error "No rollback version available. Manual intervention required."
     fi
@@ -342,7 +349,7 @@ else
     log_error "RAGService knowledge base is '${KB_SOURCE}' with ${KB_DOCS} chunks; expected the runbooks"
     log_warning "Initiating automatic rollback..."
     if [ -f "$ROLLBACK_FILE" ]; then
-        "$0" --rollback
+        bash "$SELF" --rollback || { log_error "The rollback did not restore service. Manual intervention required."; exit 2; }
     else
         log_error "No rollback version available. Manual intervention required."
     fi
@@ -429,7 +436,7 @@ fi
 
 if [ "$SMOKE_TESTS_PASSED" = false ]; then
     log_error "Smoke tests failed! Initiating rollback..."
-    "$0" --rollback
+    bash "$SELF" --rollback || { log_error "The rollback did not restore service. Manual intervention required."; exit 2; }
     exit 1
 fi
 

@@ -33,6 +33,10 @@ export AWS_PAGER=""
 # Git Bash on Windows rewrites arguments that start with "/" into Windows paths
 # before they reach a native exe, which mangles SSM parameter names.
 export MSYS_NO_PATHCONV=1
+# The AWS CLI is Python. On a Windows console its output encoding is cp1252, and
+# the server's logs contain arrows (symlink lines). Without this the CLI crashes
+# printing a boot log, mid-run, after the work has succeeded.
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 say()  { echo ""; echo "==> $*"; }

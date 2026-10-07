@@ -27,6 +27,10 @@ REGION="${AWS_REGION:-ap-south-1}"
 export AWS_DEFAULT_REGION="$REGION"
 export AWS_PAGER=""
 export MSYS_NO_PATHCONV=1
+# The AWS CLI is Python. On a Windows console its output encoding is cp1252, and
+# the server's logs contain arrows (symlink lines). Without this the CLI crashes
+# printing a boot log, mid-run, after the work has succeeded.
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 
 cd "$(dirname "$0")/../terraform"
 terraform init -input=false -reconfigure -backend-config="key=${ENV}/terraform.tfstate" > /dev/null

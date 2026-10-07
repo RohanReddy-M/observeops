@@ -134,7 +134,7 @@ say "   docker run --rm -v \"\$PWD/monitoring/prometheus:/rules\" --entrypoint p
 say "       prom/prometheus:v3.15.0 test rules /rules/tests/alerts_test.yml"
 say ""
 say "To watch detection happen, with each stage timed (about 2 minutes):"
-say "   bash scripts/chaos.sh kill"
+say "   bash scripts/chaos.sh secureship"
 say "To practise diagnosing a failure you were not told about:"
 say "   python scripts/gameday.py start"
 
