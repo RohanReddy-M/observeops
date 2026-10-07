@@ -235,3 +235,40 @@ def test_status_filter_is_applied():
 def test_status_filter_rejects_unknown_value():
     response = client_follow.get("/api/v1/ships?status=sunk")
     assert response.status_code == 400
+
+
+# ── Rate-limit identity ───────────────────────────────────────────────────────
+# Which caller a request is counted against. Getting this wrong either puts every
+# client in one bucket (the proxy's address) or lets a client pick its own bucket.
+
+class _FakeRequest:
+    def __init__(self, headers, client_host="172.18.0.5"):
+        self.headers = headers
+        self.client = type("Client", (), {"host": client_host})()
+
+
+def test_rate_limit_key_prefers_the_api_key():
+    from main import _rate_limit_key
+    request = _FakeRequest({"X-API-Key": "key-123", "X-Real-IP": "203.0.113.9"})
+    assert _rate_limit_key(request) == "key-123"
+
+
+def test_rate_limit_key_uses_the_address_our_proxy_vouches_for():
+    from main import _rate_limit_key
+    # X-Real-IP is set by our nginx. The leftmost X-Forwarded-For entry is whatever
+    # the client chose to send and must never be the identity.
+    request = _FakeRequest({"X-Real-IP": "203.0.113.9",
+                            "X-Forwarded-For": "6.6.6.6, 203.0.113.9, 10.0.1.20"})
+    assert _rate_limit_key(request) == "203.0.113.9"
+
+
+def test_rate_limit_key_ignores_a_forged_leftmost_forwarded_for():
+    from main import _rate_limit_key
+    request = _FakeRequest({"X-Forwarded-For": "6.6.6.6, 203.0.113.9"})
+    assert _rate_limit_key(request) == "203.0.113.9"      # the hop that reached our proxy
+    assert _rate_limit_key(request) != "6.6.6.6"
+
+
+def test_rate_limit_key_falls_back_to_the_socket_address():
+    from main import _rate_limit_key
+    assert _rate_limit_key(_FakeRequest({}, client_host="192.0.2.44")) == "192.0.2.44"

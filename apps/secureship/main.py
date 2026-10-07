@@ -97,8 +97,15 @@ FastAPIInstrumentor.instrument_app(app)
 #
 # Behind nginx or an ALB, request.client.host is the *proxy's* address, so every
 # unauthenticated caller would share one bucket and the limit would be useless.
-# X-Forwarded-For is only trustworthy because our proxy overwrites it; a client
-# can forge the header when nothing strips it, so this is gated on TRUST_PROXY.
+#
+# Which header to trust matters. X-Forwarded-For is a list that each proxy APPENDS
+# to, so its leftmost entry is whatever the client chose to send: keying on it
+# would let anyone dodge the limit by inventing a new value per request. X-Real-IP
+# is different: our nginx SETS it (overwriting anything the client sent) to the
+# address it resolved by walking X-Forwarded-For from the right past trusted
+# proxies only. So we use X-Real-IP, and fall back to the rightmost X-Forwarded-For
+# entry, which is the hop that reached our own proxy. Both are meaningful only
+# behind a proxy we control, hence TRUST_PROXY.
 TRUST_PROXY = os.getenv("TRUST_PROXY", "true").lower() in ("true", "1", "yes")
 
 
@@ -107,10 +114,12 @@ def _rate_limit_key(request: Request) -> str:
     if key:
         return key
     if TRUST_PROXY:
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip.strip()
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
-            # Leftmost entry is the original client; the rest are proxy hops.
-            return forwarded.split(",")[0].strip()
+            return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 limiter = Limiter(key_func=_rate_limit_key)
@@ -306,8 +315,13 @@ async def observability_middleware(request: Request, call_next):
 
 
 # A configured-but-unreachable datastore is a dependency failure, not a bug in the
-# request: 503 tells the caller to retry and keeps it out of our error-rate SLO for
-# application faults. Returning 500 would conflate the two.
+# request. 503 with Retry-After tells the caller the truth: nothing is wrong with
+# what you sent, try again shortly. A 500 would say "we have a bug".
+#
+# It still counts against the availability SLO, and it should. The SLI is "share of
+# requests that did not get a 5xx", and from the user's side a request that failed
+# because our database was down failed. The status code separates the two causes for
+# whoever is debugging; it does not excuse either from the error budget.
 @app.exception_handler(DataStoreUnavailable)
 async def _datastore_unavailable_handler(request: Request, exc: DataStoreUnavailable):
     return JSONResponse(
@@ -515,15 +529,15 @@ async def root():
 </head>
 <body>
   <div class="container">
-    <h1>ObserveOps <span class="badge">LIVE</span></h1>
-    <p class="subtitle">Cloud-native shipment platform · AWS · Kubernetes · GitOps · AI incident response</p>
+    <h1>ObserveOps <span class="badge">{environment}</span></h1>
+    <p class="subtitle">Monitoring and reliability platform · AWS · Terraform · Docker · Prometheus · Grafana · Loki · AI incident diagnosis</p>
 
     <div class="grid">
       <div class="card">
         <h3>Services</h3>
-        <div class="status-row"><span>SecureShip API</span><span><span class="dot"></span></span></div>
-        <div class="status-row"><span>StatusService</span><span><span class="dot"></span></span></div>
-        <div class="status-row"><span>RAGService (AI)</span><span><span class="dot"></span></span></div>
+        <div class="status-row"><span>SecureShip API</span><span style="color:#8b949e">/api/v1/ships</span></div>
+        <div class="status-row"><span>StatusService</span><span style="color:#8b949e">/status/</span></div>
+        <div class="status-row"><span>RAGService (AI)</span><span style="color:#8b949e">/ai/query</span></div>
       </div>
       <div class="card">
         <h3>Infrastructure</h3>
@@ -533,16 +547,16 @@ async def root():
       </div>
       <div class="card">
         <h3>Observability</h3>
-        <div class="status-row"><span>Prometheus</span><span><span class="dot"></span></span></div>
-        <div class="status-row"><span>Grafana</span><span><span class="dot"></span></span></div>
-        <div class="status-row"><span>Loki + Promtail</span><span><span class="dot"></span></span></div>
+        <div class="status-row"><span>Prometheus</span><span style="color:#8b949e">/prometheus/</span></div>
+        <div class="status-row"><span>Grafana</span><span style="color:#8b949e">/grafana/</span></div>
+        <div class="status-row"><span>Live status</span><span style="color:#8b949e">see Grafana, not this page</span></div>
       </div>
     </div>
 
     <div class="arch">
       <h3>Architecture</h3>
       <pre>
-  Internet → Route53 (secureship.click) → <span class="hl">ALB (HTTPS/443)</span>
+  Internet → <span class="hl">ALB</span> (public subnets) → nginx on the app server
                                                   │
               ┌─────────────────────────────────────┤
               │                                     │
@@ -550,12 +564,12 @@ async def root():
       nginx (rate limiting)            Prometheus · Grafana
       secureship   :8001               Loki · AlertManager
       statusservice:8002                     │
-      ragservice   :8003        alerts → <span class="hl">Lambda</span> (AI diagnosis)
-              │                              └→ <span class="hl">SNS</span> → notifications
+      ragservice   :8003        alerts → AlertManager → LLM autopilot → Slack
+              │                         audit: CloudTrail → EventBridge → <span class="hl">Lambda</span> → Slack
               └→ <span class="hl">DynamoDB</span> (ships table)
 
   CI/CD: GitHub Actions → ECR → SSM deploy → smoke tests → rollback
-  GitOps: ArgoCD App of Apps → sync waves → K8s manifests
+  Kubernetes: manifests and ArgoCD app-of-apps are defined in the repo; production runs on EC2 + Docker Compose
       </pre>
     </div>
 
