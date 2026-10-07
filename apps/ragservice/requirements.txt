@@ -30,7 +30,7 @@ groq==0.37.1                     # held below 1.0: langchain-groq requires groq<
 faiss-cpu==1.15.1
 sentence-transformers==6.1.0
 transformers==5.19.0
-numpy==2.4.6
+numpy==2.5.3
 # torch is installed separately in the Dockerfile from the CPU-only wheel index.
 
 # Metrics
