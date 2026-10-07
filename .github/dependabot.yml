@@ -1,50 +1,80 @@
 version: 2
 
+# Dependabot proposes upgrades; CI decides whether they are safe; a person merges.
+#
+# Two things this file is designed around, both learned the hard way:
+#
+# 1. Every dependency that can go stale needs an entry. This file used to cover
+#    Python and GitHub Actions only. Nothing watched the container images, so the
+#    monitoring stack drifted two major versions behind (Prometheus 2 -> 3,
+#    Grafana 11 -> 13) without a single pull request ever being opened.
+#
+# 2. One pull request per package does not work for a single maintainer. Nineteen
+#    separate PRs piled up unmerged, all editing the same requirements files, each
+#    conflicting with the next. Updates are GROUPED: one PR per ecosystem per run
+#    for minor and patch versions, which is small enough to actually review. Major
+#    versions stay separate on purpose, because those are the ones that break.
+#
+# Monthly, not weekly: at this size a weekly cadence only produces a backlog.
+
 updates:
-  # GitHub Actions — keeps workflow action versions current (security patches)
+  # ── GitHub Actions ────────────────────────────────────────────────────────
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
     labels: ["dependencies", "ci"]
+    groups:
+      actions:
+        patterns: ["*"]
 
-  # Python — SecureShip
+  # ── Python: one entry, every service's requirements.txt ───────────────────
   - package-ecosystem: "pip"
-    directory: "/apps/secureship"
+    directories:
+      - "/apps/secureship"
+      - "/apps/statusservice"
+      - "/apps/ragservice"
+      - "/apps/llm-alert-autopilot"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    labels: ["dependencies", "python", "secureship"]
+      interval: "monthly"
+    labels: ["dependencies", "python"]
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
 
-  # Python — StatusService
-  - package-ecosystem: "pip"
-    directory: "/apps/statusservice"
+  # ── Base images in the four Dockerfiles ───────────────────────────────────
+  - package-ecosystem: "docker"
+    directories:
+      - "/apps/secureship"
+      - "/apps/statusservice"
+      - "/apps/ragservice"
+      - "/apps/llm-alert-autopilot"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    labels: ["dependencies", "python", "statusservice"]
+      interval: "monthly"
+    labels: ["dependencies", "docker"]
+    groups:
+      base-images:
+        patterns: ["*"]
 
-  # Python — RAGService
-  - package-ecosystem: "pip"
-    directory: "/apps/ragservice"
+  # ── Third-party images pinned in docker-compose.yml ───────────────────────
+  # Prometheus, Grafana, Loki, Tempo, AlertManager, nginx, the OTel collector.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    labels: ["dependencies", "python", "ragservice"]
+      interval: "monthly"
+    labels: ["dependencies", "monitoring-stack"]
+    groups:
+      compose-minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Tempo 3 has a different component model and config schema; moving to it is
+      # a migration, not an upgrade. See the note beside the pin in docker-compose.yml.
+      - dependency-name: "grafana/tempo"
+        update-types: ["version-update:semver-major"]
 
-  # Python — Lambda incident analyzer
-  - package-ecosystem: "pip"
-    directory: "/apps/lambda/incident_analyzer"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    labels: ["dependencies", "python", "lambda"]
-
-  # Terraform providers
+  # ── Terraform providers ───────────────────────────────────────────────────
   - package-ecosystem: "terraform"
     directory: "/terraform"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
     labels: ["dependencies", "terraform"]
