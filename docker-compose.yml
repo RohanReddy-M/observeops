@@ -128,7 +128,7 @@ services:
   # /api/* → secureship:8001
   # /status/* → statusservice:8002
   nginx:
-    image: nginx:1.30.5-alpine
+    image: nginx:1.31.8-alpine
     container_name: nginx
     ports:
       - "80:80"
@@ -171,7 +171,7 @@ services:
   # Prometheus scrapes /metrics from our services every 15 seconds
   # and stores the data in a time-series database on disk
   prometheus:
-    image: prom/prometheus:v3.15.0
+    image: prom/prometheus:v3.15.1
     container_name: prometheus
     ports:
       - "9090:9090"
@@ -214,7 +214,7 @@ services:
   # ─── Grafana ─────────────────────────────────────────────────────────────────
   # Grafana connects to Prometheus and renders dashboards
   grafana:
-    image: grafana/grafana:13.2.3
+    image: grafana/grafana:13.3.0
     container_name: grafana
     ports:
       - "3000:3000"
@@ -257,7 +257,7 @@ services:
   # Loki stores logs. Alloy ships logs TO Loki. Grafana reads FROM Loki.
   # Alloy = log collector, Loki = log database, Grafana = log viewer.
   loki:
-    image: grafana/loki:3.7.8
+    image: grafana/loki:3.7.9
     container_name: loki
     ports:
       - "3100:3100"
@@ -293,7 +293,7 @@ services:
   # monitoring/alloy/config.alloy was produced with `alloy convert` and applies
   # the same labels, so no dashboard or query changed.
   alloy:
-    image: grafana/alloy:v1.20.1
+    image: grafana/alloy:v1.21.3
     container_name: alloy
     command:
       - run
@@ -454,7 +454,7 @@ services:
     # ingester and compactor with a different component model, so its config has
     # no `ingester:` or `compactor:` section and this stack's tempo.yaml does not
     # load there. Moving is a migration to plan and test, not a version bump.
-    image: grafana/tempo:2.10.8
+    image: grafana/tempo:2.10.10
     container_name: tempo
     user: "0"
     command: ["-config.file=/etc/tempo.yaml"]
@@ -488,7 +488,7 @@ services:
   # Receives traces from instrumented apps (secureship, ragservice) via OTLP
   # and forwards them to Tempo for storage.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.162.0
+    image: otel/opentelemetry-collector-contrib:0.164.0
     container_name: otel-collector
     command: ["--config=/etc/otel-collector.yaml"]
     volumes:
