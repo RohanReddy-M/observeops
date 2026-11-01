@@ -1,7 +1,7 @@
 # ─── Stage 1: Builder ─────────────────────────────────────────────────────────
 # Install all Python dependencies here. We copy only the installed packages
 # into the runtime stage, so the final image doesn't contain pip or build tools.
-FROM python:3.11-slim AS builder
+FROM python:3.15-slim AS builder
 
 WORKDIR /build
 COPY requirements.txt .
@@ -19,7 +19,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM python:3.11-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 WORKDIR /app
 
