@@ -2,7 +2,7 @@
 # Multi-stage builds keep the final image small and secure.
 # This stage installs dependencies. The next stage only copies what's needed.
 # Why: build tools, pip cache, etc. don't need to be in your production image.
-FROM python:3.11-slim AS builder
+FROM python:3.15-slim AS builder
 
 # Set working directory inside the container
 WORKDIR /app
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 # Fresh slim image - no build tools, no pip cache, no cruft
-FROM python:3.11-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # Security: create a non-root user to run the application
 # Why: if someone exploits your app, they get this limited user, not root
