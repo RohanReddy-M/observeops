@@ -228,7 +228,7 @@ jobs:
       # only if it still works against the provider, so this never fails on a
       # look-alike string.
       - name: TruffleHog secret scan
-        uses: trufflesecurity/trufflehog@v3.99.0
+        uses: trufflesecurity/trufflehog@v3.99.7
         with:
           path: ./
           extra_args: --only-verified
